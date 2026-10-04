@@ -47,6 +47,9 @@ def main() -> int:
     ap.add_argument("--model", default=None)
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--keep-worktree", action="store_true")
+    ap.add_argument("--resume-worktree",
+                     help="reuse an existing worktree+branch (e.g. left behind by a crash) instead of "
+                          "creating a new one; any on-disk progress in it is left for the generator to find")
     a = ap.parse_args()
 
     repo = Path(sh(["git", "rev-parse", "--show-toplevel"], Path.cwd()).stdout.strip())
@@ -64,7 +67,6 @@ def main() -> int:
     full_timeout = int(cfg.get("oracle_full_timeout_s", oracle_timeout * 3))
     base = sh(["git", "rev-parse", a.base], repo).stdout.strip()
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    branch = f"agent/{stamp}/{task['id']}"
     prompt = hx.generator_prompt(task, cfg, repo)
 
     if a.dry_run:
@@ -74,15 +76,24 @@ def main() -> int:
         cmd = hx.generator_cmd(task, tf.name, a.model)[:-1] + ["<prompt>"]
         print(prompt, "\n\n--- generator cmd ---")
         print(shlex.join(cmd))
+        branch = f"agent/{stamp}/{task['id']}"
         print(f"\nbranch would be {branch} from {base[:10]}")
         return 0
 
-    # outside the repo so test discovery in the main tree never sees worktree copies
-    wt = repo.parent / f".{repo.name}-agent-worktrees" / f"{stamp}-{task['id']}"
-    r = sh(["git", "worktree", "add", "-b", branch, str(wt), base], repo)
-    if r.returncode:
-        print(r.stderr, file=sys.stderr)
-        return 2
+    if a.resume_worktree:
+        wt = Path(a.resume_worktree).resolve()
+        branch = sh(["git", "rev-parse", "--abbrev-ref", "HEAD"], wt).stdout.strip()
+        if not branch or branch == "HEAD":
+            print(f"{wt} is not on a branch (detached HEAD?)", file=sys.stderr)
+            return 2
+    else:
+        branch = f"agent/{stamp}/{task['id']}"
+        # outside the repo so test discovery in the main tree never sees worktree copies
+        wt = repo.parent / f".{repo.name}-agent-worktrees" / f"{stamp}-{task['id']}"
+        r = sh(["git", "worktree", "add", "-b", branch, str(wt), base], repo)
+        if r.returncode:
+            print(r.stderr, file=sys.stderr)
+            return 2
     prompt_file = wt / ".harness" / task["id"] / "prompt.md"
     prompt_file.parent.mkdir(parents=True, exist_ok=True)
     prompt_file.write_text(prompt, encoding="utf-8")
