@@ -1,0 +1,138 @@
+"""Shared zone logic for oracle-gated-harness.
+
+Used by the PreToolUse hook (zone_guard.py), the Stop hook (stop_oracle.py)
+and the orchestrator post-run diff check (harness/harness_ext.py).
+Pure stdlib so it runs in any interpreter the hook happens to get.
+"""
+from __future__ import annotations
+
+import fnmatch
+import json
+import os
+import re
+import shlex
+from pathlib import Path
+
+ZONE_ORDER = ("Z0", "Z1", "Z2", "Z3")
+
+WHOLE_TREE = "<whole-tree>"
+UNATTENDED = "unattended"
+INTERACTIVE = "interactive"
+
+
+def project_dir(hook_input: dict | None = None) -> Path:
+    env = os.environ.get("CLAUDE_PROJECT_DIR")
+    if env:
+        return Path(env).resolve()
+    if hook_input and hook_input.get("cwd"):
+        return Path(hook_input["cwd"]).resolve()
+    return Path.cwd().resolve()
+
+
+CONFIG_REL = Path(".claude") / "harness" / "zones.json"
+MODE_ENV = "OGH_MODE"
+ALLOW_Z0_ENV = "OGH_ALLOW_Z0"
+
+
+def load_config(root: Path) -> dict:
+    with open(root / CONFIG_REL, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def mode() -> str:
+    m = os.environ.get(MODE_ENV, INTERACTIVE).strip().lower()
+    return UNATTENDED if m == UNATTENDED else INTERACTIVE
+
+
+def rel_path(path: str, root: Path) -> str | None:
+    """Repo-relative POSIX path, or None if the path is outside the repo."""
+    if path == WHOLE_TREE:
+        return WHOLE_TREE
+    p = Path(path)
+    if not p.is_absolute():
+        p = root / p
+    try:
+        # resolve() without strict so not-yet-existing files work
+        return p.resolve().relative_to(root).as_posix()
+    except ValueError:
+        return None
+
+
+def classify(rel: str, cfg: dict) -> str:
+    zones = cfg.get("zones", {})
+    for z in ZONE_ORDER:
+        for pat in zones.get(z, []):
+            if fnmatch.fnmatchcase(rel, pat) or rel == pat.rstrip("/*"):
+                return z
+    return cfg.get("default_zone", "Z2")
+
+
+def decide(rel: str | None, cfg: dict, run_mode: str) -> tuple[bool, str]:
+    """Return (allowed, reason) for a write to `rel` in `run_mode`."""
+    if rel is None:
+        if run_mode == UNATTENDED:
+            return False, "Write outside the repository is not allowed in unattended mode."
+        return True, "outside repo (interactive)"
+    if rel == WHOLE_TREE:
+        if run_mode == UNATTENDED:
+            return False, ("Whole-tree git operations (reset/stash/clean) are not allowed in "
+                           "unattended mode; they can revert frozen files. Edit files explicitly.")
+        return True, "whole-tree op (interactive)"
+    z = classify(rel, cfg)
+    if z == "Z0":
+        if run_mode == INTERACTIVE and os.environ.get(ALLOW_Z0_ENV) == "1":
+            return True, f"{rel} is Z0, allowed by OGH_ALLOW_Z0=1 (interactive)"
+        return False, (
+            f"{rel} is in zone Z0 (frozen: oracles, harness config, invariants). "
+            "Agents never edit Z0. If you believe a Z0 change is needed, "
+            "describe it in your final report instead."
+        )
+    if z == "Z1" and run_mode == UNATTENDED:
+        return False, (
+            f"{rel} is in zone Z1 (core, human-paired only). "
+            "In unattended mode, write your change as a patch file under "
+            "proposals/<task-id>/ (git diff format) and explain it in the report."
+        )
+    return True, f"{rel} is {z}"
+
+
+# --- Bash write detection (best effort; the post-run diff check is the backstop)
+
+_WRITE_CMDS = {"rm", "mv", "cp", "tee", "truncate", "touch", "chmod", "ln", "install", "dd", "patch"}
+_GIT_WRITE = {"checkout", "restore", "reset", "rm", "mv", "apply", "stash", "clean"}
+
+
+def bash_write_targets(command: str) -> list[str]:
+    """Paths a shell command is likely to modify. Conservative, not complete."""
+    targets: list[str] = []
+    # redirections:  > file, >> file, 2> file
+    for m in re.finditer(r"(?<![<>&\d])\d?>>?\s*([^\s;&|<>]+)", command):
+        targets.append(m.group(1))
+    for segment in re.split(r"&&|\|\||;|\|", command):
+        try:
+            toks = shlex.split(segment, posix=True)
+        except ValueError:
+            toks = segment.split()
+        if not toks:
+            continue
+        # strip env assignments / sudo
+        while toks and ("=" in toks[0] and not toks[0].startswith("-") or toks[0] == "sudo"):
+            toks = toks[1:]
+        if not toks:
+            continue
+        cmd, args = os.path.basename(toks[0]), toks[1:]
+        paths = [a for a in args if not a.startswith("-")]
+        if cmd in _WRITE_CMDS:
+            targets.extend(paths)
+        elif cmd == "sed" and any(a.startswith("-i") or a == "--in-place" for a in args):
+            targets.extend(paths[1:] if paths else [])
+        elif cmd == "git" and args and args[0] in _GIT_WRITE:
+            targets.extend(p for p in paths[1:] if p != "--")
+            if args[0] in {"reset", "stash", "clean"} and len(paths) <= 1:
+                targets.append(WHOLE_TREE)  # whole-tree operation
+        elif cmd in {"python", "python3"} and "-c" in args:
+            # can't see inside; flag protected names mentioned literally
+            body = args[args.index("-c") + 1] if args.index("-c") + 1 < len(args) else ""
+            if re.search(r"open\(|write_text|write_bytes|unlink|rename|remove", body):
+                targets.extend(re.findall(r"['\"]([^'\"]+\.\w+)['\"]", body))
+    return targets

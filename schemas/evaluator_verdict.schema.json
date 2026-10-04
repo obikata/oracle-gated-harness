@@ -1,0 +1,48 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verdict", "summary", "criteria", "issues", "ratchet_candidates"],
+  "properties": {
+    "verdict": {"type": "string", "enum": ["pass", "fail", "needs_human"]},
+    "summary": {"type": "string"},
+    "criteria": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["criterion", "status", "evidence"],
+        "properties": {
+          "criterion": {"type": "string"},
+          "status": {"type": "string", "enum": ["met", "not_met", "unverifiable"]},
+          "evidence": {"type": "string"}
+        }
+      }
+    },
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["severity", "where", "what"],
+        "properties": {
+          "severity": {"type": "string", "enum": ["blocker", "major", "minor"]},
+          "where": {"type": "string"},
+          "what": {"type": "string"}
+        }
+      }
+    },
+    "ratchet_candidates": {
+      "type": "array",
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["pattern", "proposed_guard"],
+        "properties": {
+          "pattern": {"type": "string"},
+          "proposed_guard": {"type": "string", "enum": ["test", "hook", "claude_md_rule"]}
+        }
+      }
+    }
+  }
+}

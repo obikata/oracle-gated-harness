@@ -1,0 +1,35 @@
+{
+  "_comment": "Autonomy zones. First match wins, checked Z0 -> Z3. Repo-relative fnmatch globs ('*' also matches '/'). Edit for your project.",
+  "zones": {
+    "Z0": [
+      "tests/*",
+      ".claude/*",
+      ".harness/*",
+      "CLAUDE.md",
+      "docs/ratchet-log.md"
+    ],
+    "Z1": [
+      "src/core/*"
+    ],
+    "Z2": [
+      "src/*",
+      "analysis/*"
+    ],
+    "Z3": [
+      "docs/*",
+      "reports/*",
+      "proposals/*",
+      "scratch/*"
+    ]
+  },
+  "default_zone": "Z2",
+  "oracle_fast_cmd": "python -m pytest -m fast -q -x",
+  "oracle_full_cmd": "python -m pytest -q",
+  "oracle_timeout_s": 300,
+  "dirs": {
+    "research_dir": "reports/research/",
+    "progress_dir": "reports/progress/",
+    "proposals_dir": "proposals/",
+    "runs_dir": "reports/agent-runs/"
+  }
+}

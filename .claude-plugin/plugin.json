@@ -1,0 +1,5 @@
+{
+  "name": "oracle-gated-harness",
+  "version": "0.1.0",
+  "description": "Run Claude Code unattended on research-grade code: autonomy zones enforced by hooks, deterministic oracle gates, a read-only evaluator, and a ratchet that turns every failure into a permanent guard."
+}

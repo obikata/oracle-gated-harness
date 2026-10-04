@@ -1,0 +1,12 @@
+{
+  "id": "eng-example",
+  "type": "engineering",
+  "title": "Example: add a small analysis helper",
+  "goal": "Smoke-test the harness end to end with a change that cannot touch the core.",
+  "acceptance": [
+    "analysis/hello_harness.py exists and `python -m analysis.hello_harness` prints the repository's top-level Python module names",
+    "No file in Z0 or Z1 is modified; fast and full oracle stay green"
+  ],
+  "scope": {"allow": ["analysis/*"], "context": ["README.md"]},
+  "budget": {"max_iterations": 1, "max_turns": 25, "max_budget_usd": 1.0}
+}

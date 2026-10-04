@@ -1,0 +1,108 @@
+{
+  "$comment": "Reference schema for task specs (.claude/harness/tasks/*.json). Enforced in code by harness/harness_ext.py:validate_task (stdlib only).",
+  "type": "object",
+  "required": [
+    "id",
+    "type",
+    "title",
+    "goal",
+    "acceptance",
+    "scope",
+    "budget"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{2,48}$"
+    },
+    "type": {
+      "type": "string",
+      "enum": [
+        "engineering",
+        "research"
+      ]
+    },
+    "title": {
+      "type": "string"
+    },
+    "goal": {
+      "type": "string",
+      "description": "Why this task exists, in 1-3 sentences."
+    },
+    "acceptance": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      },
+      "description": "Testable, observable criteria. 'Faster' is not a criterion; 'p95 solve time < 50 ms over 200 cycles, printed by `python -m analysis.timing`' is."
+    },
+    "scope": {
+      "type": "object",
+      "required": [
+        "allow"
+      ],
+      "properties": {
+        "allow": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Globs the task expects to edit. Must not include Z0; Z1 only via the proposals dir."
+        },
+        "context": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Files worth reading first."
+        }
+      }
+    },
+    "budget": {
+      "type": "object",
+      "required": [
+        "max_iterations",
+        "max_turns",
+        "max_budget_usd"
+      ],
+      "properties": {
+        "max_iterations": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10
+        },
+        "max_turns": {
+          "type": "integer",
+          "minimum": 5,
+          "maximum": 200
+        },
+        "max_budget_usd": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 50
+        }
+      }
+    },
+    "research": {
+      "type": "object",
+      "description": "Required when type == research.",
+      "required": [
+        "hypothesis",
+        "deliverable_dir"
+      ],
+      "properties": {
+        "hypothesis": {
+          "type": "string"
+        },
+        "conditions": {
+          "type": "string"
+        },
+        "deliverable_dir": {
+          "type": "string",
+          "description": "Must be under the project's research_dir (default reports/research/)."
+        }
+      }
+    }
+  }
+}

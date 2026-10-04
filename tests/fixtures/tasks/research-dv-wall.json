@@ -1,0 +1,21 @@
+{
+  "id": "research-dv-wall-ignition",
+  "type": "research",
+  "title": "Can ignition altitude/throttle strategy close the 88 kg gap?",
+  "goal": "High-energy landing (2600 m ignition, 224 m/s) is infeasible: 3-engine burn needs 3238 kg vs 3150 kg available. Map where the feasibility boundary is before touching the guidance core.",
+  "acceptance": [
+    "Sweep ignition altitude and initial throttle on the high-energy scenario; record min fuel or infeasible for every grid point in a CSV",
+    "A figure shows the feasibility boundary over the grid with the 3150 kg budget marked",
+    "The report states whether any point closes the gap, with the exact grid point and margin, or states clearly that none does in the tested range"
+  ],
+  "scope": {
+    "allow": ["analysis/*", "reports/research/*"],
+    "context": ["guidance.py", "scenarios.py", "sim_margin.py", "parameters.py"]
+  },
+  "budget": {"max_iterations": 2, "max_turns": 80, "max_budget_usd": 6.0},
+  "research": {
+    "hypothesis": "Igniting later with a higher initial throttle (shorter burn, lower gravity loss) brings the 3-engine requirement under 3150 kg.",
+    "conditions": "High-energy scenario only; 3-engine burn; vacuum SOCP planner; grid at least 8x8.",
+    "deliverable_dir": "reports/research/dv-wall-ignition/"
+  }
+}

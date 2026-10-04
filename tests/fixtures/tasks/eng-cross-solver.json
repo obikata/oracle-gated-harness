@@ -1,0 +1,16 @@
+{
+  "id": "eng-cross-solver",
+  "type": "engineering",
+  "title": "Cross-solver agreement test helper (ECOS vs Clarabel)",
+  "goal": "The SOCP is convex, so ECOS and Clarabel must reach the same global optimum. Add a solver switch outside the guidance core so a Z0 test can later assert agreement.",
+  "acceptance": [
+    "A function in analysis/solver_compare.py solves the RTLS and ASDS scenarios with both ECOS and Clarabel and returns fuel cost for each",
+    "Running `python -m analysis.solver_compare` prints both costs per scenario; relative difference < 0.5%",
+    "No file in Z0 or Z1 is modified; fast and full oracle stay green"
+  ],
+  "scope": {
+    "allow": ["analysis/*", "reports/*"],
+    "context": ["guidance.py", "scenarios.py", "docs/design_notes.md"]
+  },
+  "budget": {"max_iterations": 3, "max_turns": 60, "max_budget_usd": 4.0}
+}
