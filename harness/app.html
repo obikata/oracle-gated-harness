@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Task Threads</title>
+<style>
+:root{
+  --bg:#f6f5f2; --panel:#ffffff; --side:#efede8; --ink:#1d1d1f; --muted:#6e6e73; --line:#e3e0d9;
+  --gen:#2f6fde; --har:#6b6b70; --ora:#1f8a5b; --ora-bad:#c8382f; --eva:#7a4fd1; --usr:#d9741a;
+  --blocked-bg:#fdecea; --blocked-ink:#a42a22; --chip:#f1efe9; --run:#2f6fde; --pass:#1f8a5b; --fail:#c8382f; --nh:#b8860b;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root{ --bg:#151517; --panel:#1c1c1f; --side:#121214; --ink:#ececf0; --muted:#9a9aa2; --line:#2c2c31;
+    --blocked-bg:#3a1a18; --blocked-ink:#ff9a90; --chip:#26262b; }
+}
+*{box-sizing:border-box}
+body{margin:0;font:14px/1.55 -apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP","Segoe UI",sans-serif;background:var(--bg);color:var(--ink);height:100vh;display:flex}
+aside{width:300px;flex:none;background:var(--side);border-right:1px solid var(--line);display:flex;flex-direction:column}
+aside header{padding:16px 16px 10px;font-weight:700;letter-spacing:.02em}
+aside header small{display:block;font-weight:400;color:var(--muted);font-size:11px;margin-top:2px;word-break:break-all}
+#threads{overflow:auto;flex:1;padding:4px 8px 12px}
+.th{padding:10px 10px;border-radius:10px;cursor:pointer;margin:2px 0}
+.th:hover{background:var(--chip)}
+.th.active{background:var(--panel);box-shadow:0 0 0 1px var(--line)}
+.th .t{font-weight:600;font-size:13px;display:flex;gap:6px;align-items:center}
+.th .s{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
+.dot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--muted)}
+.dot.running{background:var(--run);animation:pulse 1.4s infinite}
+.dot.pass{background:var(--pass)}.dot.fail{background:var(--fail)}.dot.needs_human{background:var(--nh)}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(47,111,222,.5)}70%{box-shadow:0 0 0 7px rgba(47,111,222,0)}100%{box-shadow:0 0 0 0 rgba(47,111,222,0)}}
+main{flex:1;display:flex;flex-direction:column;min-width:0}
+#top{padding:14px 22px;border-bottom:1px solid var(--line);background:var(--panel);display:flex;gap:16px;align-items:center}
+#top h1{font-size:16px;margin:0;flex:1;min-width:0}
+#top h1 small{display:block;font-weight:400;color:var(--muted);font-size:12px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.badge{font-size:12px;padding:3px 10px;border-radius:999px;background:var(--chip);color:var(--muted);font-weight:600;white-space:nowrap}
+.badge.running{color:var(--run)}.badge.pass{color:var(--pass)}.badge.fail{color:var(--fail)}.badge.needs_human{color:var(--nh)}
+button{font:inherit;border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:8px;padding:6px 12px;cursor:pointer}
+button:hover{background:var(--chip)} button:disabled{opacity:.45;cursor:default}
+button.danger{color:var(--fail)}
+#feed{flex:1;overflow:auto;padding:18px 22px 10px}
+.msg{display:flex;gap:12px;margin:0 0 14px;max-width:880px}
+.av{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;font-size:17px;flex:none;background:var(--chip)}
+.body{min-width:0;flex:1}
+.who{font-weight:700;font-size:13px}.who time{font-weight:400;color:var(--muted);font-size:11px;margin-left:8px}
+.text{white-space:pre-wrap;word-wrap:break-word;margin-top:2px}
+.text code{font-family:var(--mono);font-size:12.5px;background:var(--chip);padding:1px 5px;border-radius:5px}
+.r-generator .who{color:var(--gen)} .r-harness .who{color:var(--har)} .r-oracle .who{color:var(--ora)}
+.r-evaluator .who{color:var(--eva)} .r-user .who{color:var(--usr)}
+.ok-false .who{color:var(--ora-bad)}
+.tools{margin-top:4px;font-size:12.5px;color:var(--muted)}
+.tools summary{cursor:pointer;user-select:none}
+.tools ol{margin:6px 0 0;padding-left:20px;font-family:var(--mono);font-size:12px;color:var(--ink)}
+.tools li{margin:1px 0;word-break:break-all}.tools li b{font-weight:600;color:var(--gen);font-family:inherit}
+.blocked{background:var(--blocked-bg);color:var(--blocked-ink);border-radius:8px;padding:6px 10px;margin-top:4px}
+.delivered{color:var(--muted);font-style:italic}
+.err{color:var(--fail)}
+.verdict{border:1px solid var(--line);border-radius:12px;padding:10px 14px;margin-top:6px;background:var(--panel)}
+.verdict .v{font-weight:800;font-size:13px;letter-spacing:.04em;text-transform:uppercase}
+.verdict .v.pass{color:var(--pass)}.verdict .v.fail{color:var(--fail)}.verdict .v.needs_human{color:var(--nh)}
+.verdict ul{margin:6px 0 0;padding-left:18px;font-size:13px}
+#composer{border-top:1px solid var(--line);background:var(--panel);padding:12px 22px 14px}
+#composer form{display:flex;gap:10px;align-items:flex-end;max-width:880px}
+textarea{flex:1;font:inherit;border:1px solid var(--line);border-radius:10px;padding:9px 12px;resize:none;min-height:42px;max-height:160px;background:var(--bg);color:var(--ink)}
+#hint{font-size:11.5px;color:var(--muted);margin-top:6px}
+#empty{color:var(--muted);margin:40px auto;text-align:center;max-width:420px}
+@media (max-width:760px){aside{display:none}}
+</style>
+</head>
+<body>
+<aside>
+  <header>Task Threads<small id="repo"></small></header>
+  <div id="threads"></div>
+</aside>
+<main>
+  <div id="top"><h1 id="title">—<small id="sub"></small></h1><span id="badge" class="badge"></span>
+    <button id="abort" class="danger" disabled>中断</button></div>
+  <div id="feed"><div id="empty">左のスレッドを選んでください。<br>新しいタスクは <code>run_task.py</code> / <code>run_queue.py</code> で始めると、ここにスレッドが立ちます。</div></div>
+  <div id="composer">
+    <form id="f"><textarea id="msg" rows="1" placeholder="ツッコミを入れる…（Enterで送信、Shift+Enterで改行）" disabled></textarea>
+      <button id="send" disabled>送信</button></form>
+    <div id="hint">メッセージは作業担当の<b>次のツール操作のあと</b>に届きます。届くとスレッドに「届けました」と表示されます。</div>
+  </div>
+</main>
+<script>
+const ROLES = {
+  ja:{generator:["🛰","作業担当"],harness:["🧭","ハーネス"],oracle:["🧪","オラクル"],evaluator:["⚖️","審査"],user:["🙋","あなた"],system:["•","system"]},
+  en:{generator:["🛰","Agent"],harness:["🧭","Harness"],oracle:["🧪","Oracle"],evaluator:["⚖️","Evaluator"],user:["🙋","You"],system:["•","system"]}
+};
+const S = {run:null, next:0, meta:null, lastRole:null, lastGroup:null};
+const $ = id => document.getElementById(id);
+const esc = s => String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const fmt = s => esc(s).replace(/`([^`]+)`/g,"<code>$1</code>");
+const hhmm = ts => { try{ return new Date(ts).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"}) }catch(e){ return "" } };
+const vclass = m => m.status==="running" ? "running" : (m.verdict||"");
+const vlabel = m => m.status==="running" ? (m.aborting?"中断中…":"実行中") : (m.verdict||m.status||"");
+
+async function loadThreads(){
+  const r = await fetch("/api/threads"); const j = await r.json();
+  $("repo").textContent = j.repo;
+  const box = $("threads"); box.innerHTML = "";
+  for(const m of j.threads){
+    const d = document.createElement("div"); d.className = "th"+(m.run===S.run?" active":"");
+    const last = m.last ? (m.last.text||"").split("\n")[0] : "";
+    d.innerHTML = `<div class="t"><span class="dot ${vclass(m)}"></span>${esc(m.title||m.task)}</div>
+      <div class="s">${esc(m.task)} · ${esc(hhmm(m.started))} · ${esc(last)}</div>`;
+    d.onclick = () => open(m.run);
+    box.appendChild(d);
+  }
+  if(!S.run && j.threads.length) open(j.threads[0].run);
+}
+
+function open(run){
+  S.run = run; S.next = 0; S.lastRole = null; S.lastGroup = null;
+  $("feed").innerHTML = ""; poll(true); loadThreads();
+}
+
+function header(meta){
+  S.meta = meta;
+  $("title").firstChild.nodeValue = meta.title || meta.task;
+  $("sub").textContent = `${meta.task} · ${meta.type} · ${meta.branch}`;
+  const b = $("badge"); b.className = "badge "+vclass(meta); b.textContent = vlabel(meta);
+  const live = meta.status === "running" && !meta.aborting;
+  $("abort").disabled = !live; $("msg").disabled = !live; $("send").disabled = !live;
+  $("msg").placeholder = live ? "ツッコミを入れる…（Enterで送信、Shift+Enterで改行）" : "このタスクは終了しています";
+}
+
+function bubble(ev){
+  const L = ROLES[(S.meta&&S.meta.language)||"en"] || ROLES.en;
+  const [icon, name] = L[ev.role] || L.system;
+  const okc = ev.meta && ev.meta.ok === false ? " ok-false" : "";
+  const el = document.createElement("div");
+  el.className = `msg r-${ev.role}${okc}`;
+  el.innerHTML = `<div class="av">${icon}</div><div class="body"><div class="who">${esc(name)}<time>${esc(hhmm(ev.ts))}</time></div></div>`;
+  $("feed").appendChild(el);
+  return el.querySelector(".body");
+}
+
+function render(ev){
+  // consecutive tool calls from the agent fold into one expandable row
+  if(ev.role==="generator" && ev.kind==="tool"){
+    if(!S.lastGroup){
+      const body = (S.lastRole==="generator" && S.lastBody) ? S.lastBody : bubble(ev);
+      const det = document.createElement("details"); det.className="tools";
+      det.innerHTML = `<summary></summary><ol></ol>`; body.appendChild(det);
+      S.lastGroup = det; S.lastBody = body; S.lastRole = "generator";
+    }
+    const li = document.createElement("li");
+    li.innerHTML = `<b>${esc(ev.meta&&ev.meta.tool)}</b> ${esc(ev.text)}`;
+    S.lastGroup.querySelector("ol").appendChild(li);
+    const n = S.lastGroup.querySelectorAll("li").length;
+    S.lastGroup.querySelector("summary").textContent = `🔧 ${n} 件の操作 — 最新: ${(ev.meta&&ev.meta.tool)||""} ${ev.text.slice(0,70)}`;
+    return;
+  }
+  S.lastGroup = null;
+  let body;
+  if(ev.role===S.lastRole && S.lastBody && ev.kind==="text"){ body = S.lastBody; }
+  else { body = bubble(ev); }
+  const div = document.createElement("div");
+  if(ev.kind==="blocked"){ div.className="blocked"; div.innerHTML = "⛔ "+fmt(ev.text); }
+  else if(ev.kind==="delivered"){ div.className="text delivered"; div.innerHTML = "📩 "+fmt(ev.text); }
+  else if(ev.kind==="error"){ div.className="text err"; div.innerHTML = fmt(ev.text); }
+  else if(ev.kind==="verdict"){
+    const v = (ev.meta&&ev.meta.verdict)||"";
+    const issues = (ev.meta&&ev.meta.issues)||[]; const rat = (ev.meta&&ev.meta.ratchet)||[];
+    div.className="verdict";
+    div.innerHTML = `<div class="v ${esc(v)}">${esc(v)}</div><div class="text">${fmt(ev.text)}</div>`+
+      (issues.length?`<ul>${issues.map(i=>`<li><b>${esc(i.severity)}</b> <code>${esc(i.where)}</code> ${esc(i.what)}</li>`).join("")}</ul>`:"")+
+      (rat.length?`<ul>${rat.map(r=>`<li>🔩 ratchet? (${esc(r.proposed_guard)}) ${esc(r.pattern)}</li>`).join("")}</ul>`:"");
+  }
+  else { div.className="text"; div.innerHTML = fmt(ev.text); }
+  body.appendChild(div);
+  S.lastRole = ev.role; S.lastBody = body;
+}
+
+async function poll(first){
+  if(!S.run) return;
+  const run = S.run;
+  try{
+    const r = await fetch(`/api/thread/${encodeURIComponent(run)}?after=${S.next}`);
+    if(!r.ok || run!==S.run) return;
+    const j = await r.json();
+    header(j.meta);
+    const feed = $("feed"); const atBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 80;
+    for(const ev of j.events) render(ev);
+    S.next = j.next;
+    if(j.events.length && (atBottom || first)) feed.scrollTop = feed.scrollHeight;
+  }catch(e){}
+}
+
+$("f").onsubmit = async e => {
+  e.preventDefault();
+  const text = $("msg").value.trim(); if(!text || !S.run) return;
+  $("msg").value = ""; autosize();
+  const r = await fetch(`/api/thread/${encodeURIComponent(S.run)}/message`, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({text})});
+  if(!r.ok){ alert((await r.json()).error||"送信できませんでした"); }
+  poll();
+};
+$("msg").addEventListener("keydown", e => { if(e.key==="Enter" && !e.shiftKey && !e.isComposing){ e.preventDefault(); $("f").requestSubmit(); }});
+const autosize = () => { const t=$("msg"); t.style.height="auto"; t.style.height=Math.min(t.scrollHeight,160)+"px"; };
+$("msg").addEventListener("input", autosize);
+$("abort").onclick = async () => {
+  if(!S.run || !confirm("実行中のエージェントを中断しますか？\n（ここまでの作業は証拠として記録され、判定は fail になります）")) return;
+  await fetch(`/api/thread/${encodeURIComponent(S.run)}/abort`, {method:"POST"}); poll();
+};
+loadThreads(); setInterval(poll, 2000); setInterval(loadThreads, 6000);
+</script>
+</body>
+</html>

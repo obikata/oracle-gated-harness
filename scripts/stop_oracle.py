@@ -14,7 +14,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "harness"))
 import zonelib  # noqa: E402
+import threads  # noqa: E402
 
 
 def main() -> None:
@@ -31,6 +33,8 @@ def main() -> None:
         sys.exit(0)  # project not using the harness
     cfg = zonelib.load_config(root)
     cmd = cfg.get("oracle_fast_cmd", "python -m pytest -m fast -q -x")
+    td = threads.from_env()
+    threads.post(td, "oracle", "status", threads.t(cfg, "stop_check"))
     try:
         r = subprocess.run(stdin=subprocess.DEVNULL, args=cmd, shell=True, cwd=root, capture_output=True,
                            text=True, timeout=cfg.get("oracle_timeout_s", 300))
@@ -38,6 +42,7 @@ def main() -> None:
         print(json.dumps({"decision": "block",
                           "reason": "Fast oracle timed out. Make it pass before finishing."}))
         sys.exit(0)
+    threads.post(td, "oracle", "status", threads.t(cfg, "stop_red" if r.returncode else "stop_ok"))
     if r.returncode != 0:
         tail = "\n".join((r.stdout + r.stderr).strip().splitlines()[-40:])
         print(json.dumps({

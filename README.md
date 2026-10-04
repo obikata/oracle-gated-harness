@@ -34,11 +34,17 @@ python $OGH/harness/run_task.py --task .claude/harness/tasks/examples/eng-exampl
 python $OGH/harness/run_task.py --task .claude/harness/tasks/examples/eng-example.json
 ```
 
-Watch the agent live from another terminal (tool calls, edits, blocked writes, finish):
+Each run is a **task thread**. Open it in the browser: the agent, the harness, the oracles
+and the evaluator post their updates there, and anything you type is delivered to the running
+agent after its next tool call. "Abort" stops it.
 
 ```bash
-python $OGH/harness/watch.py          # follows the newest run of the repo you're in
+python $OGH/harness/app.py            # http://127.0.0.1:8765 (from inside your project)
+python $OGH/harness/watch.py          # terminal alternative: raw tool-call stream
 ```
+
+Set `"language": "ja"` and `"narrate": {"language": "Japanese", "addressee": "<you>"}` in
+`.claude/harness/zones.json` to get harness messages and agent status updates in Japanese.
 
 Results: branch `agent/<stamp>/<task-id>`, evidence in `.harness/<task-id>/` on that branch,
 summary in `reports/agent-runs/`.
@@ -53,8 +59,8 @@ python $OGH/harness/run_queue.py        # -> reports/agent-runs/<stamp>-triage.m
 
 ```
 .claude-plugin/plugin.json   hooks/hooks.json       agents/evaluator.md
-scripts/   zonelib.py, zone_guard.py (PreToolUse), stop_oracle.py (Stop)
-harness/   harness_ext.py (building blocks), run_task.py (one task), run_queue.py (overnight queue + triage), watch.py (live view), init_project.py
+scripts/   zonelib.py, zone_guard.py (PreToolUse), stop_oracle.py (Stop), inbox_hook.py (PostToolUse: deliver your messages)
+harness/   harness_ext.py (building blocks), run_task.py (one task), run_queue.py (overnight queue + triage), app.py + app.html (task threads in the browser), watch.py (terminal view), threads.py, init_project.py
 skills/    task-spec, triage, ratchet
 schemas/   task + evaluator verdict
 templates/ project config copied by init_project.py

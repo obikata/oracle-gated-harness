@@ -191,6 +191,14 @@ def generator_prompt(task: dict, cfg: dict | None = None, repo_root: str | Path 
         "scope it down (fewer trials, narrower grid) and say so in your report. Never background a job.",
         "- Follow CLAUDE.md.",
     ]
+    nar = (cfg or {}).get("narrate")
+    if nar:
+        lines += ["", "## Reporting to your human (shown live in their task thread)",
+                  f"- At each milestone (plan decided, tool built, sweep started with ETA, result in, blocker hit), write ONE or TWO short "
+                  f"sentences in {nar.get('language', 'English')}, addressed to {nar.get('addressee', 'the owner')}, like a teammate's "
+                  "status update: what you just did, what you found, what's next. Be concrete (numbers, file names). No filler.",
+                  "- If you are unsure about a judgement call, say so in the update; they may reply, and their reply will be "
+                  "delivered to you after your next tool call."]
     pre = project_preamble(repo_root)
     if pre:
         lines += ["", "## Project environment", pre]
@@ -232,33 +240,58 @@ def generator_cmd(task: dict, prompt_file: str | Path, model: str | None = None)
     return cmd
 
 
-def run_streaming(cmd: list[str], cwd: Path, env: dict, timeout: float, log_path: Path) -> tuple[int, str]:
-    """Run a stream-json `claude -p`, appending every event line to `log_path` as it arrives.
+def run_streaming(cmd: list[str], cwd: Path, env: dict, timeout: float, log_path: Path,
+                  thread_dir: Path | None = None, cfg: dict | None = None) -> tuple[int, str]:
+    """Run a stream-json `claude -p`, appending every event to `log_path` as it arrives and,
+    if `thread_dir` is given, posting human-readable events to the task's thread.
 
+    A watchdog kills the agent on timeout or when <thread_dir>/ABORT appears.
     Returns (returncode, final result text). Never inherits the terminal's stdin.
     """
+    import threading
     import time as _time
+    sys.path.insert(0, str(PLUGIN_ROOT / "harness"))
+    import threads as _th
     result = ""
-    deadline = _time.time() + timeout
     err_path = log_path.with_suffix(".stderr.log")
+    why = {"v": None}
     with open(log_path, "w", encoding="utf-8") as out, open(err_path, "w", encoding="utf-8") as err:
         p = subprocess.Popen(cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                              stderr=err, text=True, bufsize=1)
+        deadline = _time.time() + timeout
+
+        def watchdog() -> None:
+            while p.poll() is None:
+                if _time.time() > deadline:
+                    why["v"] = "timeout"
+                elif thread_dir is not None and (Path(thread_dir) / "ABORT").exists():
+                    why["v"] = "abort"
+                if why["v"]:
+                    p.kill()
+                    return
+                _time.sleep(1.0)
+
+        threading.Thread(target=watchdog, daemon=True).start()
         assert p.stdout is not None
         for line in p.stdout:
             out.write(line)
             out.flush()
             try:
                 ev = json.loads(line)
-                if ev.get("type") == "result":
-                    result = ev.get("result") or result
             except json.JSONDecodeError:
-                pass
-            if _time.time() > deadline:
-                p.kill()
-                out.write(json.dumps({"type": "harness", "event": "timeout", "after_s": timeout}) + "\n")
-                return 124, result
+                continue
+            if ev.get("type") == "result":
+                result = ev.get("result") or result
+            if thread_dir is not None:
+                for role, kind, text, meta in _th.stream_event_to_posts(ev, cfg):
+                    _th.post(thread_dir, role, kind, text, **meta)
         rc = p.wait()
+    if why["v"]:
+        with open(log_path, "a", encoding="utf-8") as out:
+            out.write(json.dumps({"type": "harness", "event": why["v"], "after_s": timeout}) + "\n")
+        if why["v"] == "abort":
+            _th.post(thread_dir, "harness", "status", _th.t(cfg, "aborted"))
+        return (130 if why["v"] == "abort" else 124), result
     return rc, result
 
 

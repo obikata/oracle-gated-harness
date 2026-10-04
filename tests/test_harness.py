@@ -465,3 +465,126 @@ def test_generator_uses_stream_json(repo, tmp_path):
     pf = tmp_path / "p.md"; pf.write_text("x")  # noqa: E702
     cmd = hx.generator_cmd(t, pf)
     assert cmd[cmd.index("--output-format") + 1] == "stream-json" and "--verbose" in cmd
+
+
+# ------------------------------------------------------------------ task threads + browser app
+
+def _th():
+    sys.path.insert(0, str(PLUGIN / "harness"))
+    import threads
+    return threads
+
+
+def test_thread_create_post_read_and_inbox(tmp_path):
+    th = _th()
+    d = th.create(tmp_path, "20261004-120000-x", {"task": "x", "title": "X", "language": "ja"})
+    th.post(d, "harness", "status", "hello")
+    th.send_to_agent(d, "まず基準値を出して")
+    evs = th.read_thread(d)
+    assert [e["role"] for e in evs] == ["harness", "user"]
+    assert th.take_unread(d) == ["まず基準値を出して"] and th.take_unread(d) == []
+    th.send_to_agent(d, "二通目")
+    assert th.take_unread(d) == ["二通目"]
+    assert th.read_meta(d)["status"] == "running"
+
+
+def test_stream_events_map_to_thread_posts():
+    th = _th()
+    cfg = {"language": "ja"}
+    posts = th.stream_event_to_posts({"type": "assistant", "message": {"content": [
+        {"type": "text", "text": "基準値の計測を始めます"},
+        {"type": "tool_use", "name": "Bash", "input": {"command": "uv run python3 tools/nav_noise_sweep.py"}}]}}, cfg)
+    assert posts[0][:2] == ("generator", "text") and posts[1][:2] == ("generator", "tool") and posts[1][3]["tool"] == "Bash"
+    blk = th.stream_event_to_posts({"type": "user", "message": {"content": [{"type": "tool_result", "is_error": True,
+        "content": [{"type": "text", "text": "[zone_guard] guidance.py is in zone Z1"}]}]}}, cfg)
+    assert blk[0][:2] == ("harness", "blocked") and "止めました" in blk[0][2]
+    done = th.stream_event_to_posts({"type": "result", "num_turns": 7, "total_cost_usd": 1.25}, cfg)
+    assert done[0][0] == "harness" and "$1.25" in done[0][2]
+
+
+def test_inbox_hook_delivers_and_posts(tmp_path):
+    th = _th()
+    d = th.create(tmp_path, "run-1", {"task": "t", "title": "T", "language": "ja"})
+    env = dict(os.environ, OGH_THREAD_DIR=str(d))
+    hook = [sys.executable, str(PLUGIN / "scripts/inbox_hook.py")]
+    r = subprocess.run(hook, input="{}", capture_output=True, text=True, env=env)
+    assert r.returncode == 0 and r.stdout.strip() == ""          # nothing queued: silent
+    th.send_to_agent(d, "N=200は無理ならN=100でいい")
+    r = subprocess.run(hook, input="{}", capture_output=True, text=True, env=env)
+    out = json.loads(r.stdout)["hookSpecificOutput"]
+    assert out["hookEventName"] == "PostToolUse" and "N=100でいい" in out["additionalContext"]
+    assert th.read_thread(d)[-1]["kind"] == "delivered"
+    r = subprocess.run(hook, input="{}", capture_output=True, text=True, env=env)
+    assert r.stdout.strip() == ""                                  # delivered once only
+    r = subprocess.run(hook, input="{}", capture_output=True, text=True,
+                       env={k: v for k, v in env.items() if k != "OGH_THREAD_DIR"})
+    assert r.returncode == 0 and r.stdout.strip() == ""          # inert outside harness runs
+
+
+def test_hooks_json_registers_inbox():
+    h = json.loads((PLUGIN / "hooks/hooks.json").read_text())["hooks"]
+    assert "inbox_hook.py" in h["PostToolUse"][0]["hooks"][0]["command"]
+
+
+def test_run_streaming_abort(tmp_path):
+    th = _th()
+    d = th.create(tmp_path, "run-ab", {"task": "t", "title": "T"})
+    fake = tmp_path / "slow.py"
+    fake.write_text("import time\nfor i in range(600):\n    print('{}', flush=True); time.sleep(0.1)\n")
+    import threading
+    threading.Timer(1.0, lambda: (d / "ABORT").write_text("x")).start()
+    rc, _ = hx.run_streaming([sys.executable, str(fake)], tmp_path, dict(os.environ), 60, tmp_path / "g.jsonl",
+                             thread_dir=d, cfg={})
+    assert rc == 130 and th.read_thread(d)[-1]["text"].startswith("Aborted")
+
+
+def test_app_api(tmp_path):
+    th = _th()
+    sys.path.insert(0, str(PLUGIN / "harness"))
+    import app
+    from http.server import ThreadingHTTPServer
+    import threading
+    import urllib.request
+    d = th.create(tmp_path, "20261004-140000-demo", {"task": "demo", "title": "Demo", "type": "research",
+                                                      "branch": "agent/x/demo", "language": "ja"})
+    th.post(d, "generator", "text", "始めます")
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), app.make_handler(tmp_path))
+    port = srv.server_address[1]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{port}"
+    get = lambda p: json.loads(urllib.request.urlopen(base + p).read())  # noqa: E731
+    def post(p, body):
+        req = urllib.request.Request(base + p, data=json.dumps(body).encode(), method="POST",
+                                     headers={"Content-Type": "application/json"})
+        return json.loads(urllib.request.urlopen(req).read())
+    assert b"Task Threads" in urllib.request.urlopen(base + "/").read()
+    lst = get("/api/threads")["threads"]
+    assert lst[0]["run"] == "20261004-140000-demo" and lst[0]["events"] == 1
+    t1 = get("/api/thread/20261004-140000-demo?after=0")
+    assert t1["next"] == 1 and t1["events"][0]["text"] == "始めます"
+    assert post("/api/thread/20261004-140000-demo/message", {"text": "了解、続けて"})["ok"]
+    assert th.take_unread(d) == ["了解、続けて"]
+    t2 = get("/api/thread/20261004-140000-demo?after=1")
+    assert t2["events"][0]["role"] == "user"
+    assert post("/api/thread/20261004-140000-demo/abort", {})["ok"] and (d / "ABORT").exists()
+    th.write_meta(d, {"status": "done"})
+    try:
+        post("/api/thread/20261004-140000-demo/message", {"text": "late"})
+        assert False, "should refuse"
+    except urllib.error.HTTPError as e:
+        assert e.code == 409
+    try:
+        get("/api/thread/..%2F..%2Fetc")
+        assert False
+    except urllib.error.HTTPError as e:
+        assert e.code == 404
+    srv.shutdown()
+
+
+def test_narration_prompt(repo):
+    t = hx.load_task(repo / ".claude/harness/tasks/eng-cross-solver.json", repo)
+    cfg = zonelib.load_config(repo)
+    assert "Reporting to your human" not in hx.generator_prompt(t, cfg)
+    cfg["narrate"] = {"language": "Japanese", "addressee": "Yohei"}
+    p = hx.generator_prompt(t, cfg)
+    assert "in Japanese, addressed to Yohei" in p
