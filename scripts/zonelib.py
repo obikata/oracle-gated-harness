@@ -120,6 +120,10 @@ def decide(rel: str | None, cfg: dict, run_mode: str, is_new: bool | None = None
 
 _WRITE_CMDS = {"rm", "mv", "cp", "tee", "truncate", "touch", "chmod", "ln", "install", "dd", "patch"}
 _GIT_WRITE = {"checkout", "restore", "reset", "rm", "mv", "apply", "stash", "clean"}
+# Redirect targets that never represent a real write worth gating (discarding
+# output, not persisting it). Without this, `2>/dev/null` -- an extremely
+# common idiom -- reads as "write outside the repository" and gets denied.
+_REDIRECT_NOOP = {"/dev/null", "/dev/stdout", "/dev/stderr", "/dev/zero"}
 
 
 def bash_write_targets(command: str) -> list[str]:
@@ -127,7 +131,9 @@ def bash_write_targets(command: str) -> list[str]:
     targets: list[str] = []
     # redirections:  > file, >> file, 2> file
     for m in re.finditer(r"(?<![<>&\d])\d?>>?\s*([^\s;&|<>]+)", command):
-        targets.append(m.group(1))
+        t = m.group(1)
+        if t not in _REDIRECT_NOOP:
+            targets.append(t)
     for segment in re.split(r"&&|\|\||;|\|", command):
         try:
             toks = shlex.split(segment, posix=True)

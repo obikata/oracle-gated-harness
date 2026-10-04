@@ -130,6 +130,8 @@ def test_write_and_notebook_tools(repo):
     ("echo x | tee tests/x.py", True),
     ("FOO=1 rm guidance.py", True),
     ("python -c \"open('guidance.py','w').write('')\"", True),
+    ("cat reports/x.md 2>/dev/null", False),            # stderr discard, not a write
+    ("ls guidance.py 1>/dev/null 2>&1", False),
 ])
 def test_bash(repo, cmd, expect_deny):
     assert denied(hook("zone_guard.py", bash(cmd), repo)) is expect_deny
