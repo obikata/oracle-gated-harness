@@ -568,6 +568,7 @@ def test_app_api(tmp_path):
     assert th.take_unread(d) == ["了解、続けて"]
     t2 = get("/api/thread/20261004-140000-demo?after=1")
     assert t2["events"][0]["role"] == "user"
+    assert t2["events"][1]["role"] == "harness" and "届きます" in t2["events"][1]["text"]
     assert post("/api/thread/20261004-140000-demo/abort", {})["ok"] and (d / "ABORT").exists()
     th.write_meta(d, {"status": "done"})
     try:

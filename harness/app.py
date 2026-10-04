@@ -230,6 +230,7 @@ def make_handler(repo: Path):
                 if not text:
                     return self._json({"error": "empty"}, 400)
                 th.send_to_agent(d, text[:4000])
+                th.post(d, "harness", "status", th.t(meta, "queued"))
                 return self._json({"ok": True})
             (d / "ABORT").write_text(th.now())
             th.post(d, "user", "text", "⏹ 中断を指示しました" if meta.get("language") == "ja" else "⏹ Abort requested")
