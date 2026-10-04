@@ -12,15 +12,24 @@
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 }
 @media (prefers-color-scheme: dark){
-  :root{ --bg:#151517; --panel:#1c1c1f; --side:#121214; --ink:#ececf0; --muted:#9a9aa2; --line:#2c2c31;
+  :root:not([data-theme="light"]){ --bg:#151517; --panel:#1c1c1f; --side:#121214; --ink:#ececf0; --muted:#9a9aa2; --line:#2c2c31;
     --blocked-bg:#3a1a18; --blocked-ink:#ff9a90; --chip:#26262b; }
 }
+:root[data-theme="dark"]{ --bg:#151517; --panel:#1c1c1f; --side:#121214; --ink:#ececf0; --muted:#9a9aa2; --line:#2c2c31;
+  --blocked-bg:#3a1a18; --blocked-ink:#ff9a90; --chip:#26262b; }
 *{box-sizing:border-box}
 body{margin:0;font:14px/1.55 -apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP","Segoe UI",sans-serif;background:var(--bg);color:var(--ink);height:100vh;display:flex}
 aside{width:300px;flex:none;background:var(--side);border-right:1px solid var(--line);display:flex;flex-direction:column}
-aside header{padding:16px 16px 10px;font-weight:700;letter-spacing:.02em}
+aside header{padding:16px 16px 10px;font-weight:700;letter-spacing:.02em;display:flex;align-items:center;gap:8px}
+aside header #theme{margin-left:auto;font-size:14px;padding:3px 8px;line-height:1}
 aside header small{display:block;font-weight:400;color:var(--muted);font-size:11px;margin-top:2px;word-break:break-all}
+.sec{padding:10px 16px 4px;font-size:11px;font-weight:700;letter-spacing:.04em;color:var(--muted);text-transform:uppercase;display:flex;align-items:center;gap:8px}
+.sec button{margin-left:auto;font-size:11px;padding:3px 8px;text-transform:none;letter-spacing:0;font-weight:600}
+.th .pick{margin-right:6px}
+#queue{flex:none;max-height:38vh;overflow:auto;padding:0 8px}
+#queue:empty + #threads-head{display:none}
 #threads{overflow:auto;flex:1;padding:4px 8px 12px}
+.th .run-btn{font-size:11.5px;padding:3px 10px;margin-top:4px}
 .th{padding:10px 10px;border-radius:10px;cursor:pointer;margin:2px 0}
 .th:hover{background:var(--chip)}
 .th.active{background:var(--panel);box-shadow:0 0 0 1px var(--line)}
@@ -70,7 +79,10 @@ textarea{flex:1;font:inherit;border:1px solid var(--line);border-radius:10px;pad
 </head>
 <body>
 <aside>
-  <header>Task Threads<small id="repo"></small></header>
+  <header>Task Threads<button id="theme" title="配色を切り替え">🌓</button><small id="repo"></small></header>
+  <div id="queue-head" class="sec">待機中のタスク<button id="run-batch" disabled>選択をキュー実行</button></div>
+  <div id="queue"></div>
+  <div id="threads-head" class="sec">スレッド</div>
   <div id="threads"></div>
 </aside>
 <main>
@@ -88,13 +100,91 @@ const ROLES = {
   ja:{generator:["🛰","作業担当"],harness:["🧭","ハーネス"],oracle:["🧪","オラクル"],evaluator:["⚖️","審査"],user:["🙋","あなた"],system:["•","system"]},
   en:{generator:["🛰","Agent"],harness:["🧭","Harness"],oracle:["🧪","Oracle"],evaluator:["⚖️","Evaluator"],user:["🙋","You"],system:["•","system"]}
 };
-const S = {run:null, next:0, meta:null, lastRole:null, lastGroup:null};
+const S = {run:null, next:0, meta:null, lastRole:null, lastGroup:null, selectedQueue:new Set()};
 const $ = id => document.getElementById(id);
+
+(function initTheme(){
+  let saved = null;
+  try{ saved = localStorage.getItem("theme"); }catch(e){}
+  if(saved === "light" || saved === "dark") document.documentElement.setAttribute("data-theme", saved);
+  $("theme").onclick = () => {
+    const sysDark = matchMedia("(prefers-color-scheme: dark)").matches;
+    const cur = document.documentElement.getAttribute("data-theme") || (sysDark ? "dark" : "light");
+    const next = cur === "dark" ? "light" : "dark";
+    document.documentElement.setAttribute("data-theme", next);
+    try{ localStorage.setItem("theme", next); }catch(e){}
+  };
+})();
+
 const esc = s => String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const fmt = s => esc(s).replace(/`([^`]+)`/g,"<code>$1</code>");
 const hhmm = ts => { try{ return new Date(ts).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"}) }catch(e){ return "" } };
 const vclass = m => m.status==="running" ? "running" : (m.verdict||"");
 const vlabel = m => m.status==="running" ? (m.aborting?"中断中…":"実行中") : (m.verdict||m.status||"");
+
+async function loadQueue(){
+  const r = await fetch("/api/queue"); const j = await r.json();
+  const box = $("queue"); box.innerHTML = "";
+  const stillPending = new Set(j.queue.filter(t => t.status === "pending").map(t => t.id));
+  for(const id of [...S.selectedQueue]) if(!stillPending.has(id)) S.selectedQueue.delete(id);
+  for(const t of j.queue){
+    const d = document.createElement("div"); d.className = "th";
+    const pending = t.status === "pending";
+    const head = document.createElement("div"); head.className = "t";
+    if(pending){
+      const cb = document.createElement("input");
+      cb.type = "checkbox"; cb.className = "pick"; cb.checked = S.selectedQueue.has(t.id);
+      cb.onclick = e => e.stopPropagation();
+      cb.onchange = () => { cb.checked ? S.selectedQueue.add(t.id) : S.selectedQueue.delete(t.id); updateRunBatchBtn(); };
+      head.appendChild(cb);
+    }
+    head.innerHTML += `<span class="dot ${pending?'':vclass(t)}"></span>${esc(t.title)}`;
+    d.appendChild(head);
+    const sub = document.createElement("div"); sub.className = "s";
+    sub.textContent = `${t.id}${t.type?" · "+t.type:""}${pending?"":" · "+vlabel(t)}`;
+    d.appendChild(sub);
+    if(pending){
+      const btn = document.createElement("button");
+      btn.className = "run-btn"; btn.textContent = "実行";
+      btn.onclick = async (e) => {
+        e.stopPropagation();
+        btn.disabled = true; btn.textContent = "起動中…";
+        try{
+          const resp = await fetch("/api/queue/run", {method:"POST", headers:{"Content-Type":"application/json"},
+            body: JSON.stringify({source: t.source, task_id: t.task_id})});
+          if(!resp.ok){ alert((await resp.json()).error || "起動できませんでした"); btn.disabled=false; btn.textContent="実行"; return; }
+          setTimeout(() => { loadThreads(); loadQueue(); }, 1500);
+        }catch(err){ btn.disabled=false; btn.textContent="実行"; }
+      };
+      d.appendChild(btn);
+    } else if(t.run){
+      d.onclick = () => open(t.run);
+    }
+    box.appendChild(d);
+  }
+  updateRunBatchBtn();
+}
+
+function updateRunBatchBtn(){
+  const n = S.selectedQueue.size;
+  const b = $("run-batch");
+  b.disabled = n === 0;
+  b.textContent = n ? `選択した${n}件をキュー実行` : "選択をキュー実行";
+}
+
+$("run-batch").onclick = async () => {
+  const ids = [...S.selectedQueue];
+  if(!ids.length) return;
+  if(!confirm(`${ids.length}件を順番に自律実行します（終わるまで数十分〜数時間かかることがあります）。よろしいですか？`)) return;
+  const b = $("run-batch"); b.disabled = true; b.textContent = "起動中…";
+  try{
+    const resp = await fetch("/api/queue/run_batch", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({ids})});
+    if(!resp.ok){ alert((await resp.json()).error || "起動できませんでした"); }
+    S.selectedQueue.clear();
+    setTimeout(() => { loadThreads(); loadQueue(); }, 1500);
+  }catch(err){} finally{ updateRunBatchBtn(); }
+};
 
 async function loadThreads(){
   const r = await fetch("/api/threads"); const j = await r.json();
@@ -204,7 +294,7 @@ $("abort").onclick = async () => {
   if(!S.run || !confirm("実行中のエージェントを中断しますか？\n（ここまでの作業は証拠として記録され、判定は fail になります）")) return;
   await fetch(`/api/thread/${encodeURIComponent(S.run)}/abort`, {method:"POST"}); poll();
 };
-loadThreads(); setInterval(poll, 2000); setInterval(loadThreads, 6000);
+loadThreads(); loadQueue(); setInterval(poll, 2000); setInterval(loadThreads, 6000); setInterval(loadQueue, 8000);
 </script>
 </body>
 </html>

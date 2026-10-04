@@ -16,6 +16,7 @@ import json
 import re
 import subprocess
 import sys
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -25,6 +26,70 @@ sys.path.insert(0, str(HERE))
 import threads as th  # noqa: E402
 
 RUN_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+QUEUE_DIR = ".claude/harness/queues"
+TASKS_DIR = ".claude/harness/tasks"
+
+
+def _load_queue_tasks(repo: Path) -> list[dict]:
+    """Task specs found in .claude/harness/queues/*.jsonl and .claude/harness/tasks/**/*.json,
+    deduped by id (first occurrence wins)."""
+    seen: dict[str, dict] = {}
+    for p in sorted((repo / QUEUE_DIR).glob("*.jsonl")) if (repo / QUEUE_DIR).is_dir() else []:
+        try:
+            lines = p.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                t = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            tid = t.get("id")
+            if tid and tid not in seen:
+                seen[tid] = {"id": tid, "title": t.get("title", tid), "type": t.get("type", ""),
+                             "source": str(p.relative_to(repo)), "task_id": tid, "budget": t.get("budget", {}),
+                             "_full": t}
+    if (repo / TASKS_DIR).is_dir():
+        for p in sorted((repo / TASKS_DIR).rglob("*.json")):
+            try:
+                t = json.loads(p.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            tid = t.get("id")
+            if tid and tid not in seen:
+                seen[tid] = {"id": tid, "title": t.get("title", tid), "type": t.get("type", ""),
+                             "source": str(p.relative_to(repo)), "task_id": None, "budget": t.get("budget", {}),
+                             "_full": t}
+    return list(seen.values())
+
+
+def _public_queue_item(t: dict) -> dict:
+    return {k: v for k, v in t.items() if k != "_full"}
+
+
+def _task_status(repo: Path, troot: Path, task_id: str) -> dict:
+    """pending (never run) / running / done, cross-referencing threads (any run, any branch)
+    and legacy .harness/<id>/ evidence dirs (runs that predate the threads feature, or that were
+    already merged to the current branch)."""
+    if troot.is_dir():
+        for d in troot.iterdir():
+            if d.is_dir() and th.read_meta(d).get("task") == task_id:
+                m = th.read_meta(d)
+                return {"status": m.get("status", "unknown"), "verdict": m.get("verdict"), "run": d.name}
+    legacy = repo / ".harness" / task_id
+    if legacy.is_dir():
+        verdict = None
+        try:
+            rj = json.loads((legacy / "run.json").read_text(encoding="utf-8"))
+            verdict = rj.get("verdict")
+        except (OSError, json.JSONDecodeError):
+            pass
+        return {"status": "done", "verdict": verdict, "run": None}
+    return {"status": "pending", "verdict": None, "run": None}
 
 
 def make_handler(repo: Path):
@@ -79,10 +144,73 @@ def make_handler(repo: Path):
                 meta = th.read_meta(d)
                 meta["aborting"] = (d / "ABORT").exists()
                 return self._json({"meta": meta, "events": evs, "next": after + len(evs)})
+            if u.path == "/api/queue":
+                items = [_public_queue_item({**t, **_task_status(repo, troot, t["id"])})
+                         for t in _load_queue_tasks(repo)]
+                items.sort(key=lambda t: (t["status"] != "pending", t["id"]))
+                return self._json({"repo": str(repo), "queue": items})
             self._json({"error": "not found"}, 404)
 
         def do_POST(self) -> None:
             u = urlparse(self.path)
+            if u.path == "/api/queue/run":
+                n = int(self.headers.get("Content-Length") or 0)
+                try:
+                    body = json.loads(self.rfile.read(n) or b"{}")
+                except json.JSONDecodeError:
+                    body = {}
+                source = str(body.get("source", ""))
+                task_id = body.get("task_id")
+                full = (repo / source).resolve()
+                allowed = [(repo / QUEUE_DIR).resolve(), (repo / TASKS_DIR).resolve()]
+                if not full.is_file() or not any(str(full).startswith(str(a) + "/") for a in allowed):
+                    return self._json({"error": "invalid source"}, 400)
+                cmd = [sys.executable, str(HERE / "run_task.py"), "--task", str(full)]
+                if task_id:
+                    cmd += ["--id", str(task_id)]
+                log_dir = repo / ".harness"
+                log_dir.mkdir(parents=True, exist_ok=True)
+                with open(log_dir / "queue_launch.log", "ab") as lf:
+                    subprocess.Popen(cmd, cwd=str(repo), stdout=lf, stderr=lf,
+                                      stdin=subprocess.DEVNULL, start_new_session=True)
+                return self._json({"ok": True})
+            if u.path == "/api/queue/run_batch":
+                n = int(self.headers.get("Content-Length") or 0)
+                try:
+                    body = json.loads(self.rfile.read(n) or b"{}")
+                except json.JSONDecodeError:
+                    body = {}
+                ids = [str(i) for i in (body.get("ids") or [])]
+                by_id = {t["id"]: t for t in _load_queue_tasks(repo)}
+                standalone_files: list[Path] = []
+                batched_specs = []
+                for tid in ids:
+                    t = by_id.get(tid)
+                    if t is None:
+                        continue
+                    if t["task_id"] is None:
+                        standalone_files.append((repo / t["source"]).resolve())
+                    else:
+                        batched_specs.append(t["_full"])
+                if not standalone_files and not batched_specs:
+                    return self._json({"error": "no valid task ids"}, 400)
+                task_file_args = [str(p) for p in standalone_files]
+                if batched_specs:
+                    qdir = repo / ".harness" / "queue"
+                    qdir.mkdir(parents=True, exist_ok=True)
+                    stamp = time.strftime("%Y%m%d-%H%M%S")
+                    batch_file = qdir / f"_webrun_{stamp}.jsonl"
+                    with open(batch_file, "w", encoding="utf-8") as f:
+                        for spec in batched_specs:
+                            f.write(json.dumps(spec, ensure_ascii=False) + "\n")
+                    task_file_args.append(str(batch_file))
+                cmd = [sys.executable, str(HERE / "run_queue.py"), "--tasks", *task_file_args]
+                log_dir = repo / ".harness"
+                log_dir.mkdir(parents=True, exist_ok=True)
+                with open(log_dir / "queue_launch.log", "ab") as lf:
+                    subprocess.Popen(cmd, cwd=str(repo), stdout=lf, stderr=lf,
+                                      stdin=subprocess.DEVNULL, start_new_session=True)
+                return self._json({"ok": True, "n": len(ids)})
             m = re.match(r"^/api/thread/([^/]+)/(message|abort)$", u.path)
             if not m:
                 return self._json({"error": "not found"}, 404)
