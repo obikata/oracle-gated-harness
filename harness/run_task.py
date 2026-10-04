@@ -39,7 +39,8 @@ def run_oracle(cmd: str, wt: Path, timeout: int) -> tuple[bool, str]:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--task", required=True)
+    ap.add_argument("--task", required=True, help=".json spec, or .jsonl (with --id) incl. legacy night_run tasks")
+    ap.add_argument("--id", help="task id inside a .jsonl file")
     ap.add_argument("--base", default="HEAD")
     ap.add_argument("--model", default=None)
     ap.add_argument("--dry-run", action="store_true")
@@ -48,11 +49,21 @@ def main() -> int:
 
     repo = Path(sh(["git", "rev-parse", "--show-toplevel"], Path.cwd()).stdout.strip())
     cfg = zonelib.load_config(repo)
-    task = hx.load_task(a.task, repo)
+    if a.id:
+        matches = [t for t in hx.load_tasks(a.task, repo) if t["id"] == a.id]
+        if not matches:
+            print(f"no task with id {a.id!r} in {a.task}", file=sys.stderr)
+            return 2
+        task = matches[0]
+    else:
+        task = hx.load_task(a.task, repo)
+    task_timeout = float(cfg.get("task_timeout_min", 60)) * 60
+    oracle_timeout = int(cfg.get("oracle_timeout_s", 300))
+    full_timeout = int(cfg.get("oracle_full_timeout_s", oracle_timeout * 3))
     base = sh(["git", "rev-parse", a.base], repo).stdout.strip()
     stamp = time.strftime("%Y%m%d-%H%M%S")
     branch = f"agent/{stamp}/{task['id']}"
-    prompt = hx.generator_prompt(task, cfg)
+    prompt = hx.generator_prompt(task, cfg, repo)
 
     if a.dry_run:
         import tempfile
@@ -79,12 +90,17 @@ def main() -> int:
     t0 = time.time()
     for it in range(1, task["budget"]["max_iterations"] + 1):
         print(f"[{task['id']}] iteration {it}")
-        g = sh(hx.generator_cmd(task, prompt_file, a.model), wt, env=hx.generator_env(), timeout=3 * 3600)
+        try:
+            g = sh(hx.generator_cmd(task, prompt_file, a.model), wt, env=hx.generator_env(), timeout=task_timeout)
+        except subprocess.TimeoutExpired as e:
+            g = subprocess.CompletedProcess(e.cmd, 124, e.stdout or "", f"TIMEOUT after {task_timeout:.0f}s")
+        (prompt_file.parent / f"generator_{it}.json").write_text(
+            (g.stdout or "") + ("\n--- stderr ---\n" + g.stderr if g.stderr else ""), encoding="utf-8")
         try:
             report = json.loads(g.stdout).get("result", "") or report
         except json.JSONDecodeError:
             report = (g.stdout + g.stderr)[-4000:]
-        ok, fast_log = run_oracle(cfg["oracle_fast_cmd"], wt, cfg.get("oracle_timeout_s", 300))
+        ok, fast_log = run_oracle(cfg["oracle_fast_cmd"], wt, oracle_timeout)
         if ok:
             status = "oracle_green"
             break
@@ -93,9 +109,23 @@ def main() -> int:
             print(f"[{task['id']}] same failure {gutter.limit}x in a row, stopping")
             break
 
-    full_ok, full_log = run_oracle(cfg["oracle_full_cmd"], wt, cfg.get("oracle_timeout_s", 300) * 3)
+    full_ok, full_log = run_oracle(cfg["oracle_full_cmd"], wt, full_timeout)
     zc = hx.check_diff_zones(wt, base)
-    verdict = hx.run_evaluator(wt, task, base, {"oracle_fast": fast_log, "oracle_full": full_log, "report": report}, zc)
+    nochange = hx.no_change_problem(task, zc, cfg)
+    logs = {"oracle_fast": fast_log, "oracle_full": full_log, "report": report}
+    if not zc["ok"]:
+        verdict = hx.run_evaluator(wt, task, base, logs, zc)  # short-circuits to fail, writes evidence
+    elif nochange:
+        hx.write_evidence(wt, task, base, logs, zc)
+        verdict = {"verdict": "fail", "summary": nochange, "criteria": [], "issues": [
+            {"severity": "blocker", "where": "(diff)", "what": nochange}], "ratchet_candidates": []}
+    elif not full_ok:
+        hx.write_evidence(wt, task, base, logs, zc)
+        verdict = {"verdict": "fail", "summary": "Full oracle is red.", "criteria": [], "issues": [
+            {"severity": "blocker", "where": "oracle_full.log", "what": "\n".join(full_log.strip().splitlines()[-8:])}],
+            "ratchet_candidates": []}
+    else:
+        verdict = hx.run_evaluator(wt, task, base, logs, zc)
 
     summary = {"task": task["id"], "type": task["type"], "branch": branch, "status": status,
                "oracle_full": "green" if full_ok else "red", "zones_ok": zc["ok"],

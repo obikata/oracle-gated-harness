@@ -2,11 +2,14 @@
 
 Run Claude Code **unattended** on code where being subtly wrong is worse than being slow.
 
-- **Autonomy zones** (Z0 frozen → Z3 free), enforced by a PreToolUse hook *and* a post-run diff check
+- **Autonomy zones** (Z0 frozen → Z3 free), enforced by a PreToolUse hook *and* a post-run diff check;
+  `append_only` areas let agents add new tests but never modify existing ones
 - **Oracle gates**: a Stop hook that won't let the agent finish red; fast + full oracle after each run
 - **Read-only Evaluator** that judges evidence, not the generator's claims, with project domain rules
 - **Research tasks** whose deliverable is evidence (data, figures, report), where a clean negative result passes
 - **Ratchet**: every failure seen in triage becomes a permanent guard, logged
+- **False-green guard**: a no-op (or a research task with no deliverable) fails, even with green oracles
+- Runs legacy `{id,title,prompt,scope,max_turns}` `.jsonl` backlogs unchanged; global time budget + STOP file
 - Never merges. Every run lands on its own `agent/<stamp>/<task-id>` branch with its evidence
 
 Stdlib Python only. Requires Claude Code v2.1.259+ (`--permission-prompts none`).

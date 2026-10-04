@@ -67,8 +67,24 @@ def classify(rel: str, cfg: dict) -> str:
     return cfg.get("default_zone", "Z2")
 
 
-def decide(rel: str | None, cfg: dict, run_mode: str) -> tuple[bool, str]:
-    """Return (allowed, reason) for a write to `rel` in `run_mode`."""
+def is_append_only(rel: str, cfg: dict) -> bool:
+    return any(fnmatch.fnmatchcase(rel, p) for p in cfg.get("append_only", []))
+
+
+def exists_at_head(rel: str, root: Path) -> bool:
+    """True if `rel` is tracked at HEAD (i.e. it existed before this agent run)."""
+    import subprocess
+    r = subprocess.run(["git", "cat-file", "-e", f"HEAD:{rel}"], cwd=root,
+                       capture_output=True, text=True)
+    return r.returncode == 0
+
+
+def decide(rel: str | None, cfg: dict, run_mode: str, is_new: bool | None = None) -> tuple[bool, str]:
+    """Return (allowed, reason) for a write to `rel` in `run_mode`.
+
+    `is_new` (file absent at the base commit) unlocks `append_only` patterns:
+    agents may ADD e.g. new test files but never modify or delete existing ones.
+    """
     if rel is None:
         if run_mode == UNATTENDED:
             return False, "Write outside the repository is not allowed in unattended mode."
@@ -79,6 +95,8 @@ def decide(rel: str | None, cfg: dict, run_mode: str) -> tuple[bool, str]:
                            "unattended mode; they can revert frozen files. Edit files explicitly.")
         return True, "whole-tree op (interactive)"
     z = classify(rel, cfg)
+    if z == "Z0" and is_new and is_append_only(rel, cfg):
+        return True, f"{rel} is a new file in an append-only area"
     if z == "Z0":
         if run_mode == INTERACTIVE and os.environ.get(ALLOW_Z0_ENV) == "1":
             return True, f"{rel} is Z0, allowed by OGH_ALLOW_Z0=1 (interactive)"
@@ -86,6 +104,8 @@ def decide(rel: str | None, cfg: dict, run_mode: str) -> tuple[bool, str]:
             f"{rel} is in zone Z0 (frozen: oracles, harness config, invariants). "
             "Agents never edit Z0. If you believe a Z0 change is needed, "
             "describe it in your final report instead."
+            + (" You MAY add a NEW file matching: " + ", ".join(cfg.get("append_only", []))
+               + " (existing ones are frozen)." if is_append_only(rel, cfg) else "")
         )
     if z == "Z1" and run_mode == UNATTENDED:
         return False, (

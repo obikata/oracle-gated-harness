@@ -41,7 +41,7 @@ def repo(tmp_path: Path) -> Path:
     (r / ".claude/harness/tasks").mkdir(parents=True)
     (r / ".claude/harness/zones.json").write_text(json.dumps(ZONES))
     shutil.copytree(PLUGIN / "tests/fixtures/tasks", r / ".claude/harness/tasks", dirs_exist_ok=True)
-    for f in ("guidance.py", "plant.py", "viewer/app.js", "tests/test_oracle.py"):
+    for f in ("guidance.py", "plant.py", "viewer/app.js", "tests/test_oracle.py", "tests/conftest.py"):
         (r / f).parent.mkdir(parents=True, exist_ok=True)
         (r / f).write_text("# orig\n")
     run = lambda *a: subprocess.run(a, cwd=r, check=True, capture_output=True)  # noqa: E731
@@ -313,3 +313,96 @@ def test_evidence_diff_includes_new_files(repo):
     d = hx.write_evidence(repo, t, "HEAD", {}, hx.check_diff_zones(repo, "HEAD"))
     patch = (d / "diff.patch").read_text()
     assert "analysis/new.py" in patch and ".harness" not in patch
+
+
+# ------------------------------------------------------------------ append-only (new tests allowed, existing frozen)
+
+def _append_only(repo):
+    cfg = json.loads((repo / ".claude/harness/zones.json").read_text())
+    cfg["append_only"] = ["tests/test_*.py"]
+    (repo / ".claude/harness/zones.json").write_text(json.dumps(cfg))
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qam", "append_only"],
+                   cwd=repo, check=True)
+
+
+def test_append_only_hook(repo):
+    _append_only(repo)
+    assert not denied(hook("zone_guard.py", {"tool_name": "Write", "tool_input": {
+        "file_path": str(repo / "tests/test_new_regression.py"), "content": "def test_x(): pass"}}, repo))
+    assert denied(hook("zone_guard.py", edit(str(repo / "tests/test_oracle.py")), repo))      # existing: frozen
+    assert denied(hook("zone_guard.py", edit(str(repo / "tests/conftest.py")), repo))         # not a test_*.py
+    assert denied(hook("zone_guard.py", bash("rm tests/test_oracle.py"), repo))
+    assert denied(hook("zone_guard.py", bash("echo x > tests/test_brand_new.py"), repo))       # shell: diff check decides
+
+
+def test_append_only_diff_check(repo):
+    _append_only(repo)
+    (repo / "tests/test_new_regression.py").write_text("def test_x(): pass\n")
+    assert hx.check_diff_zones(repo, "HEAD")["ok"]
+    (repo / "tests/test_oracle.py").write_text("# weakened\n")
+    zc = hx.check_diff_zones(repo, "HEAD")
+    assert [v["file"] for v in zc["violations"]] == ["tests/test_oracle.py"]
+
+
+def test_append_only_delete_is_violation(repo):
+    _append_only(repo)
+    (repo / "tests/test_oracle.py").unlink()
+    zc = hx.check_diff_zones(repo, "HEAD")
+    assert not zc["ok"] and zc["violations"][0]["file"] == "tests/test_oracle.py"
+
+
+def test_append_only_scope_validates(repo):
+    _append_only(repo)
+    t = json.loads((repo / ".claude/harness/tasks/eng-cross-solver.json").read_text())
+    t["scope"]["allow"] = ["tests/*", "tools/*"]
+    hx.validate_task(t, zonelib.load_config(repo))
+    t["scope"]["allow"] = ["tests/conftest.py"]
+    with pytest.raises(hx.TaskError, match="Z0"):
+        hx.validate_task(t, zonelib.load_config(repo))
+
+
+# ------------------------------------------------------------------ legacy night_run tasks
+
+def test_legacy_conversion(repo, tmp_path):
+    cfg = zonelib.load_config(repo)
+    cfg["dirs"] = {"research_dir": "reports/"}
+    leg = {"id": "multi-engine-research", "title": "T", "prompt": "Do X. Write reports/x.md", "scope": ["reports/"], "max_turns": 50}
+    s = hx.validate_task(hx.from_legacy(leg, cfg), cfg)
+    assert s["type"] == "research" and s["scope"]["allow"] == ["reports/*"] and s["budget"]["max_turns"] == 50
+    assert s["research"]["deliverable_dir"] == "reports/"
+    eng = hx.from_legacy({"id": "x_fix", "title": "T", "prompt": "p", "scope": ["tools/a.py"]}, cfg)
+    assert eng["type"] == "engineering" and eng["id"] == "x-fix"
+    assert "## Instructions\nDo X." in hx.generator_prompt(s, cfg)
+
+
+def test_load_tasks_jsonl(repo):
+    f = repo / "tasks.legacy.jsonl"
+    f.write_text('# comment\n{"id": "aaa-1", "title": "A", "prompt": "p", "scope": ["plant.py"]}\n'
+                 '{"id": "bbb-2", "title": "B", "prompt": "p", "scope": ["viewer/"]}\n')
+    ids = [t["id"] for t in hx.load_tasks(f, repo)]
+    assert ids == ["aaa-1", "bbb-2"]
+    with pytest.raises(hx.TaskError, match="run_queue"):
+        hx.load_task(f, repo)
+
+
+def test_false_green_guard(repo):
+    cfg = zonelib.load_config(repo)
+    t = hx.load_task(repo / ".claude/harness/tasks/eng-cross-solver.json", repo)
+    assert "no file changes" in hx.no_change_problem(t, hx.check_diff_zones(repo, "HEAD"), cfg)
+    (repo / "reports/progress").mkdir(parents=True)
+    (repo / "reports/progress/eng-cross-solver.md").write_text("did nothing")
+    assert "no file changes" in hx.no_change_problem(t, hx.check_diff_zones(repo, "HEAD"), cfg)  # progress note alone isn't work
+    (repo / "plant.py").write_text("# real change\n")
+    assert hx.no_change_problem(t, hx.check_diff_zones(repo, "HEAD"), cfg) is None
+    r = hx.load_task(repo / ".claude/harness/tasks/research-dv-wall.json", repo)
+    assert "nothing under reports/research/" in hx.no_change_problem(r, hx.check_diff_zones(repo, "HEAD"), cfg)
+
+
+def test_generator_prompt_has_preamble_and_oneshot(repo):
+    (repo / ".claude/harness/agent-preamble.md").write_text("Always use `uv run`.")
+    t = hx.load_task(repo / ".claude/harness/tasks/eng-cross-solver.json", repo)
+    p = hx.generator_prompt(t, zonelib.load_config(repo), repo)
+    assert "Always use `uv run`." in p and "ONE-SHOT" in p and "Do not git commit" in p
+    pf = repo / "p.md"; pf.write_text(p)  # noqa: E702
+    cmd = hx.generator_cmd(t, pf)
+    assert "Bash" in cmd and not any(c.startswith("Bash(") for c in cmd)  # broad Bash, no prefix allowlist

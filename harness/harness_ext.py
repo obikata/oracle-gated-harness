@@ -41,6 +41,16 @@ def dirs(cfg: dict) -> dict:
 
 # ----------------------------------------------------------------------------- task spec
 
+def _scope_hits_append_only(g: str, cfg: dict) -> bool:
+    """A scope glob in Z0 is acceptable if it can only mean 'add new files' in an append-only area."""
+    pats = cfg.get("append_only", [])
+    if not pats:
+        return False
+    import fnmatch
+    probe = g.replace("*", "test_new_x.py") if "*" in g else g
+    return any(fnmatch.fnmatchcase(probe, p) for p in pats)
+
+
 def validate_task(task: dict, cfg: dict) -> dict:
     errs: list[str] = []
     for k in ("id", "type", "title", "goal", "acceptance", "scope", "budget"):
@@ -61,7 +71,7 @@ def validate_task(task: dict, cfg: dict) -> dict:
     else:
         for g in allow:
             z = zonelib.classify(g.rstrip("*").rstrip("/") or g, cfg)
-            if z == "Z0":
+            if z == "Z0" and not _scope_hits_append_only(g, cfg):
                 errs.append(f"scope.allow '{g}' is Z0 (frozen)")
             elif z == "Z1":
                 errs.append(f"scope.allow '{g}' is Z1; unattended tasks reach Z1 only via {dirs(cfg)['proposals_dir']}")
@@ -81,15 +91,74 @@ def validate_task(task: dict, cfg: dict) -> dict:
     return task
 
 
-def load_task(path: str | Path, repo_root: str | Path) -> dict:
+def from_legacy(t: dict, cfg: dict) -> dict:
+    """Convert a night_run-style task {id, title, prompt, scope, max_turns} to a full spec.
+
+    Acceptance is derived from the prompt (the prompt is the contract), and the task is
+    typed research when every scope entry is under the research dir.
+    """
+    d = dirs(cfg)
+    scope = [g if not g.endswith("/") else g + "*" for g in t.get("scope", [])] or ["*"]
+    research = all(g.startswith(d["research_dir"]) for g in scope)
+    tid = re.sub(r"[^a-z0-9-]+", "-", str(t["id"]).lower()).strip("-")[:49].rstrip("-")
+    spec = {
+        "id": tid if len(tid) >= 3 else f"task-{tid}",
+        "type": "research" if research else "engineering",
+        "title": t.get("title", t["id"]),
+        "goal": t.get("title", t["id"]),
+        "prompt": t["prompt"],
+        "acceptance": t.get("acceptance") or [
+            "Every numbered/explicit deliverable in the task instructions is completed, each with evidence (file, command output, or test)",
+            "Anything that could not be completed is stated explicitly with the reason, not silently skipped",
+            "The fast oracle passes and no Z0/Z1 file is modified",
+        ],
+        "scope": {"allow": scope},
+        "budget": {"max_iterations": 1, "max_turns": int(t.get("max_turns", 40)),
+                   "max_budget_usd": float(t.get("max_budget_usd", 10.0))},
+        "_legacy": True,
+    }
+    if research:
+        spec["research"] = {"hypothesis": "(see instructions)", "deliverable_dir": d["research_dir"]}
+    return spec
+
+
+def load_tasks(path: str | Path, repo_root: str | Path) -> list[dict]:
+    """Load one .json spec, or a .jsonl file of specs / legacy night_run tasks."""
     cfg = zonelib.load_config(Path(repo_root))
-    with open(path, encoding="utf-8") as f:
-        return validate_task(json.load(f), cfg)
+    p = Path(path)
+    raw = []
+    if p.suffix == ".jsonl":
+        for line in p.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                raw.append(json.loads(line))
+    else:
+        raw.append(json.loads(p.read_text(encoding="utf-8")))
+    out = []
+    for t in raw:
+        if "type" not in t and "prompt" in t:
+            t = from_legacy(t, cfg)
+        out.append(validate_task(t, cfg))
+    return out
+
+
+def load_task(path: str | Path, repo_root: str | Path) -> dict:
+    tasks = load_tasks(path, repo_root)
+    if len(tasks) != 1:
+        raise TaskError(f"{path} holds {len(tasks)} tasks; use run_queue.py for multi-task files")
+    return tasks[0]
 
 
 # ----------------------------------------------------------------------------- generator
 
-def generator_prompt(task: dict, cfg: dict | None = None) -> str:
+def project_preamble(repo_root: str | Path | None) -> str:
+    if repo_root is None:
+        return ""
+    f = Path(repo_root) / ".claude" / "harness" / "agent-preamble.md"
+    return f.read_text(encoding="utf-8").strip() if f.exists() else ""
+
+
+def generator_prompt(task: dict, cfg: dict | None = None, repo_root: str | Path | None = None) -> str:
     """The per-iteration prompt. Fresh context every iteration; state lives in files."""
     d = dirs(cfg or {})
     progress = f"{d['progress_dir']}{task['id']}.md"
@@ -101,6 +170,8 @@ def generator_prompt(task: dict, cfg: dict | None = None) -> str:
     ]
     if task["scope"].get("context"):
         lines.append("Read first: " + ", ".join(task["scope"]["context"]))
+    if task.get("prompt"):
+        lines += ["", "## Instructions", task["prompt"]]
     if task["type"] == "research":
         r = task["research"]
         lines += ["", "## Research", f"Hypothesis: {r['hypothesis']}",
@@ -114,9 +185,19 @@ def generator_prompt(task: dict, cfg: dict | None = None) -> str:
         "- Your final message is your report: changes, evidence for each acceptance criterion, open problems.",
         "- Zones are enforced by hooks. Oracles and harness config are frozen (Z0); never try to edit them.",
         f"- Core changes (Z1) go into {d['proposals_dir']}{task['id']}/*.patch (git diff format), never applied directly.",
+        "- Do not git commit, push or switch branches; the harness commits your work.",
+        "- You are a ONE-SHOT headless run: nobody will resume you or check on anything you leave running. "
+        "Run slow sweeps in the foreground to completion; if something cannot finish within your turn budget, "
+        "scope it down (fewer trials, narrower grid) and say so in your report. Never background a job.",
         "- Follow CLAUDE.md.",
     ]
+    pre = project_preamble(repo_root)
+    if pre:
+        lines += ["", "## Project environment", pre]
     return "\n".join(lines)
+
+
+GENERATOR_TOOLS = ("Read", "Edit", "Write", "MultiEdit", "Bash", "Glob", "Grep", "WebSearch", "WebFetch")
 
 
 def generator_env() -> dict:
@@ -133,8 +214,9 @@ def generator_cmd(task: dict, prompt_file: str | Path, model: str | None = None)
         "--plugin-dir", str(PLUGIN_ROOT),
         "--permission-mode", "acceptEdits",
         "--permission-prompts", "none",          # nobody is there to answer
-        "--allowedTools", "Bash(python *)", "Bash(python3 *)", "Bash(pytest *)",
-        "Bash(git diff *)", "Bash(git status *)", "Bash(git log *)", "Bash(ls *)",
+        # Broad tools on purpose: narrow Bash prefix allowlists burn turns on denied
+        # legitimate commands. Safety comes from the zone hook + post-run diff check.
+        "--allowedTools", *GENERATOR_TOOLS,
         "--max-turns", str(b["max_turns"]),
         "--max-budget-usd", str(b["max_budget_usd"] / max(1, b["max_iterations"])),
         "--output-format", "json",
@@ -190,18 +272,36 @@ def check_diff_zones(worktree: str | Path, base: str, run_mode: str = zonelib.UN
     """Backstop for the hook: classify every file touched since `base` (committed or not)."""
     wt = Path(worktree).resolve()
     cfg = zonelib.load_config(wt)
-    files = set(_git(["diff", "--name-only", f"{base}"], wt).split())
-    files |= set(_git(["ls-files", "--others", "--exclude-standard"], wt).split())
+    status: dict[str, str] = {}
+    for line in _git(["diff", "--name-status", "--no-renames", f"{base}"], wt).splitlines():
+        st, _, f = line.partition("\t")
+        status[f] = st[:1]
+    for f in _git(["ls-files", "--others", "--exclude-standard"], wt).split():
+        status.setdefault(f, "A")
     touched, violations = [], []
-    for f in sorted(files):
+    for f in sorted(status):
         if is_ignored(f, cfg):
             continue  # evidence and build artifacts
         z = zonelib.classify(f, cfg)
-        ok, reason = zonelib.decide(f, cfg, run_mode)
-        touched.append({"file": f, "zone": z})
+        ok, reason = zonelib.decide(f, cfg, run_mode, is_new=status[f] == "A")
+        touched.append({"file": f, "zone": z, "change": status[f]})
         if not ok:
             violations.append({"file": f, "zone": z, "reason": reason})
     return {"touched": touched, "violations": violations, "ok": not violations}
+
+
+def no_change_problem(task: dict, zone_check: dict, cfg: dict) -> str | None:
+    """False-green guard: a no-op passes every oracle. Require real output."""
+    files = [t["file"] for t in zone_check["touched"]]
+    progress = dirs(cfg)["progress_dir"]
+    work = [f for f in files if not f.startswith(progress)]
+    if not work:
+        return "agent produced no file changes (false-green guard)"
+    if task["type"] == "research":
+        dd = task["research"]["deliverable_dir"]
+        if not any(f.startswith(dd) for f in work):
+            return f"research task produced nothing under {dd}"
+    return None
 
 
 # ----------------------------------------------------------------------------- evaluator

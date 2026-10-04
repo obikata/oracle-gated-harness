@@ -40,6 +40,10 @@ plugin hooks, project config in `.claude/harness/`, gates in `harness/run_task.p
 | **Z2** reviewed | supporting code, analysis, new modules | allowed, Evaluator reviews | allowed |
 | **Z3** free | docs, reports, proposals, scratch, viewers | allowed | allowed |
 
+**Append-only areas** (`append_only` in zones.json, e.g. `tests/test_*.py`): agents may
+add new files there (new regression tests are how the ratchet grows) but any
+modification or deletion of an existing file is a violation.
+
 Mode comes from `OGH_MODE` (`unattended` is set by the orchestrator; default
 is `interactive`). Enforcement is layered:
 

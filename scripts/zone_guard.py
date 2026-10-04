@@ -46,7 +46,13 @@ def main() -> None:
         cfg = zonelib.load_config(root)
         tool = data.get("tool_name", "")
         for t in targets_for(tool, data.get("tool_input") or {}):
-            ok, reason = zonelib.decide(zonelib.rel_path(t, root), cfg, run_mode)
+            rel = zonelib.rel_path(t, root)
+            is_new = None
+            if rel and rel != zonelib.WHOLE_TREE and zonelib.is_append_only(rel, cfg):
+                is_new = not zonelib.exists_at_head(rel, root)
+                if tool == "Bash" and is_new is True:
+                    is_new = None  # shell can't be trusted to only create (rm/mv/sed -i); diff check decides
+            ok, reason = zonelib.decide(rel, cfg, run_mode, is_new)
             if not ok:
                 deny(f"[zone_guard] {reason}")
     except SystemExit:
