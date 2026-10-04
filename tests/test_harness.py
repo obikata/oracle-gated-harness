@@ -423,3 +423,45 @@ def test_subprocesses_never_inherit_terminal_stdin():
         src = (PLUGIN / f).read_text()
         for call in _re.findall(r"subprocess\.run\((.{0,200})", src):
             assert "DEVNULL" in call, f"{f}: subprocess.run without stdin=DEVNULL: {call[:80]}"
+
+
+# ------------------------------------------------------------------ live streaming + watch.py
+
+def test_run_streaming_writes_live_and_extracts_result(tmp_path):
+    fake = tmp_path / "fake.py"
+    fake.write_text(
+        "import json,sys,time\n"
+        "print(json.dumps({'type':'system','subtype':'init','model':'m'}),flush=True)\n"
+        "print(json.dumps({'type':'assistant','message':{'content':[{'type':'tool_use','name':'Bash','input':{'command':'ls'}}]}}),flush=True)\n"
+        "print(json.dumps({'type':'result','subtype':'success','result':'DONE REPORT','num_turns':2,'total_cost_usd':0.1}),flush=True)\n")
+    log = tmp_path / "g.jsonl"
+    rc, res = hx.run_streaming([sys.executable, str(fake)], tmp_path, dict(os.environ), 30, log)
+    assert rc == 0 and res == "DONE REPORT"
+    assert len(log.read_text().splitlines()) == 3
+
+
+def test_run_streaming_timeout(tmp_path):
+    fake = tmp_path / "slow.py"
+    fake.write_text("import time,sys\nfor i in range(100):\n    print('{}', flush=True); time.sleep(0.1)\n")
+    rc, _ = hx.run_streaming([sys.executable, str(fake)], tmp_path, dict(os.environ), 0.5, tmp_path / "g.jsonl")
+    assert rc == 124 and '"timeout"' in (tmp_path / "g.jsonl").read_text()
+
+
+def test_watch_render():
+    sys.path.insert(0, str(PLUGIN / "harness"))
+    import watch
+    lines = watch.render({"type": "assistant", "message": {"content": [
+        {"type": "text", "text": "Let me check the scenario"},
+        {"type": "tool_use", "name": "Edit", "input": {"file_path": "/x/guidance.py"}}]}}, False)
+    assert "Let me check" in lines[0] and "guidance.py" in lines[1]
+    blocked = watch.render({"type": "user", "message": {"content": [{"type": "tool_result", "is_error": True,
+        "content": "[zone_guard] guidance.py is in zone Z1"}]}}, False)
+    assert "BLOCKED" in blocked[0]
+    assert "finished" in watch.render({"type": "result", "subtype": "success", "num_turns": 3, "total_cost_usd": 1.5}, False)[0]
+
+
+def test_generator_uses_stream_json(repo, tmp_path):
+    t = hx.load_task(repo / ".claude/harness/tasks/eng-cross-solver.json", repo)
+    pf = tmp_path / "p.md"; pf.write_text("x")  # noqa: E702
+    cmd = hx.generator_cmd(t, pf)
+    assert cmd[cmd.index("--output-format") + 1] == "stream-json" and "--verbose" in cmd

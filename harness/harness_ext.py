@@ -222,13 +222,44 @@ def generator_cmd(task: dict, prompt_file: str | Path, model: str | None = None)
         "--allowedTools", *GENERATOR_TOOLS,
         "--max-turns", str(b["max_turns"]),
         "--max-budget-usd", str(b["max_budget_usd"] / max(1, b["max_iterations"])),
-        "--output-format", "json",
+        # stream-json: events are written live to .harness/<id>/generator_<i>.jsonl (see harness/watch.py)
+        "--output-format", "stream-json", "--verbose",
         "--no-session-persistence",
     ]
     if model:
         cmd += ["--model", model]
     cmd.append(Path(prompt_file).read_text(encoding="utf-8"))
     return cmd
+
+
+def run_streaming(cmd: list[str], cwd: Path, env: dict, timeout: float, log_path: Path) -> tuple[int, str]:
+    """Run a stream-json `claude -p`, appending every event line to `log_path` as it arrives.
+
+    Returns (returncode, final result text). Never inherits the terminal's stdin.
+    """
+    import time as _time
+    result = ""
+    deadline = _time.time() + timeout
+    err_path = log_path.with_suffix(".stderr.log")
+    with open(log_path, "w", encoding="utf-8") as out, open(err_path, "w", encoding="utf-8") as err:
+        p = subprocess.Popen(cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                             stderr=err, text=True, bufsize=1)
+        assert p.stdout is not None
+        for line in p.stdout:
+            out.write(line)
+            out.flush()
+            try:
+                ev = json.loads(line)
+                if ev.get("type") == "result":
+                    result = ev.get("result") or result
+            except json.JSONDecodeError:
+                pass
+            if _time.time() > deadline:
+                p.kill()
+                out.write(json.dumps({"type": "harness", "event": "timeout", "after_s": timeout}) + "\n")
+                return 124, result
+        rc = p.wait()
+    return rc, result
 
 
 # ----------------------------------------------------------------------------- gutter

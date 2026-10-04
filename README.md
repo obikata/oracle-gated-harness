@@ -34,6 +34,12 @@ python $OGH/harness/run_task.py --task .claude/harness/tasks/examples/eng-exampl
 python $OGH/harness/run_task.py --task .claude/harness/tasks/examples/eng-example.json
 ```
 
+Watch the agent live from another terminal (tool calls, edits, blocked writes, finish):
+
+```bash
+python $OGH/harness/watch.py          # follows the newest run of the repo you're in
+```
+
 Results: branch `agent/<stamp>/<task-id>`, evidence in `.harness/<task-id>/` on that branch,
 summary in `reports/agent-runs/`.
 
@@ -48,7 +54,7 @@ python $OGH/harness/run_queue.py        # -> reports/agent-runs/<stamp>-triage.m
 ```
 .claude-plugin/plugin.json   hooks/hooks.json       agents/evaluator.md
 scripts/   zonelib.py, zone_guard.py (PreToolUse), stop_oracle.py (Stop)
-harness/   harness_ext.py (building blocks), run_task.py (one task), run_queue.py (overnight queue + triage), init_project.py
+harness/   harness_ext.py (building blocks), run_task.py (one task), run_queue.py (overnight queue + triage), watch.py (live view), init_project.py
 skills/    task-spec, triage, ratchet
 schemas/   task + evaluator verdict
 templates/ project config copied by init_project.py

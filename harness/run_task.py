@@ -90,16 +90,11 @@ def main() -> int:
     t0 = time.time()
     for it in range(1, task["budget"]["max_iterations"] + 1):
         print(f"[{task['id']}] iteration {it}")
-        try:
-            g = sh(hx.generator_cmd(task, prompt_file, a.model), wt, env=hx.generator_env(), timeout=task_timeout)
-        except subprocess.TimeoutExpired as e:
-            g = subprocess.CompletedProcess(e.cmd, 124, e.stdout or "", f"TIMEOUT after {task_timeout:.0f}s")
-        (prompt_file.parent / f"generator_{it}.json").write_text(
-            (g.stdout or "") + ("\n--- stderr ---\n" + g.stderr if g.stderr else ""), encoding="utf-8")
-        try:
-            report = json.loads(g.stdout).get("result", "") or report
-        except json.JSONDecodeError:
-            report = (g.stdout + g.stderr)[-4000:]
+        log = prompt_file.parent / f"generator_{it}.jsonl"
+        print(f"[{task['id']}] live log: {log}   (watch: python3 {Path(__file__).parent / 'watch.py'})", flush=True)
+        _rc, res = hx.run_streaming(hx.generator_cmd(task, prompt_file, a.model), wt, hx.generator_env(),
+                                    task_timeout, log)
+        report = res or report or f"(no final result; generator rc={_rc}, see {log.name})"
         ok, fast_log = run_oracle(cfg["oracle_fast_cmd"], wt, oracle_timeout)
         if ok:
             status = "oracle_green"
