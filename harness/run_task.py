@@ -26,7 +26,7 @@ import zonelib  # noqa: E402  (path inserted by harness_ext)
 
 
 def sh(cmd: list[str] | str, cwd: Path, env=None, timeout=None, shell=False) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, cwd=cwd, env=env, timeout=timeout, shell=shell, capture_output=True, text=True)
+    return subprocess.run(stdin=subprocess.DEVNULL, args=cmd, cwd=cwd, env=env, timeout=timeout, shell=shell, capture_output=True, text=True)
 
 
 def run_oracle(cmd: str, wt: Path, timeout: int) -> tuple[bool, str]:

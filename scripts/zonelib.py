@@ -74,7 +74,7 @@ def is_append_only(rel: str, cfg: dict) -> bool:
 def exists_at_head(rel: str, root: Path) -> bool:
     """True if `rel` is tracked at HEAD (i.e. it existed before this agent run)."""
     import subprocess
-    r = subprocess.run(["git", "cat-file", "-e", f"HEAD:{rel}"], cwd=root,
+    r = subprocess.run(["git", "cat-file", "-e", f"HEAD:{rel}"], cwd=root, stdin=subprocess.DEVNULL,
                        capture_output=True, text=True)
     return r.returncode == 0
 

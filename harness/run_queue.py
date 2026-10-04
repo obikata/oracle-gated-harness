@@ -73,7 +73,7 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
 
-    repo = Path(subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True,
+    repo = Path(subprocess.run(stdin=subprocess.DEVNULL, args=["git", "rev-parse", "--show-toplevel"], capture_output=True,
                                text=True, check=True).stdout.strip())
     cfg = zonelib.load_config(repo)
     runs_dir = repo / hx.dirs(cfg)["runs_dir"]
@@ -121,7 +121,7 @@ def main() -> int:
         spec.write_text(json.dumps({k: v for k, v in t.items() if k != "_legacy"}, indent=2), encoding="utf-8")
         cmd = [sys.executable, str(HERE / "run_task.py"), "--task", str(spec)] + (["--model", a.model] if a.model else [])
         try:
-            r = subprocess.run(cmd, cwd=repo, capture_output=True, text=True,
+            r = subprocess.run(stdin=subprocess.DEVNULL, args=cmd, cwd=repo, capture_output=True, text=True,
                                timeout=max(60.0, min(6 * 3600, deadline - time.time() + 3600)))
             new = sorted(set(runs_dir.glob(f"*-{t['id']}.json")) - before)
             if new:

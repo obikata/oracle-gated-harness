@@ -32,7 +32,7 @@ def main() -> None:
     cfg = zonelib.load_config(root)
     cmd = cfg.get("oracle_fast_cmd", "python -m pytest -m fast -q -x")
     try:
-        r = subprocess.run(cmd, shell=True, cwd=root, capture_output=True,
+        r = subprocess.run(stdin=subprocess.DEVNULL, args=cmd, shell=True, cwd=root, capture_output=True,
                            text=True, timeout=cfg.get("oracle_timeout_s", 300))
     except subprocess.TimeoutExpired:
         print(json.dumps({"decision": "block",

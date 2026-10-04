@@ -212,6 +212,9 @@ def generator_cmd(task: dict, prompt_file: str | Path, model: str | None = None)
     cmd = [
         "claude", "-p",
         "--plugin-dir", str(PLUGIN_ROOT),
+        # Unattended runs ignore the user's personal ~/.claude/settings.json (its allow rules
+        # and hooks are tuned for interactive work elsewhere); project + local settings still apply.
+        "--setting-sources", "project,local",
         "--permission-mode", "acceptEdits",
         "--permission-prompts", "none",          # nobody is there to answer
         # Broad tools on purpose: narrow Bash prefix allowlists burn turns on denied
@@ -255,7 +258,7 @@ class GutterDetector:
 # ----------------------------------------------------------------------------- zone check
 
 def _git(args: list[str], cwd: Path) -> str:
-    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=True).stdout
+    return subprocess.run(stdin=subprocess.DEVNULL, args=["git", *args], cwd=cwd, capture_output=True, text=True, check=True).stdout
 
 
 DEFAULT_IGNORE = (".harness/*", "__pycache__/*", "*/__pycache__/*", "*.pyc",
@@ -337,6 +340,7 @@ def evaluator_cmd(task: dict, schema_path: str | Path, system_prompt_file: str |
               "Follow your instructions exactly and return the verdict JSON.")
     return [
         "claude", "-p",
+        "--setting-sources", "project,local",
         "--append-system-prompt-file", str(system_prompt_file),
         "--tools", "Read,Grep,Glob",
         "--permission-prompts", "none",
@@ -376,7 +380,7 @@ def run_evaluator(worktree: str | Path, task: dict, base: str, logs: dict[str, s
     sp = wt / ".harness" / task["id"] / "evaluator_system.md"
     sp.write_text(evaluator_system_prompt(wt), encoding="utf-8")
     env = dict(os.environ, **{zonelib.MODE_ENV: zonelib.UNATTENDED})
-    r = subprocess.run(evaluator_cmd(task, schema, sp), cwd=wt, capture_output=True,
+    r = subprocess.run(stdin=subprocess.DEVNULL, args=evaluator_cmd(task, schema, sp), cwd=wt, capture_output=True,
                        text=True, timeout=timeout_s, env=env)
     if r.returncode != 0:
         return {"verdict": "needs_human", "summary": f"Evaluator exited {r.returncode}.",

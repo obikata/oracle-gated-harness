@@ -406,3 +406,20 @@ def test_generator_prompt_has_preamble_and_oneshot(repo):
     pf = repo / "p.md"; pf.write_text(p)  # noqa: E702
     cmd = hx.generator_cmd(t, pf)
     assert "Bash" in cmd and not any(c.startswith("Bash(") for c in cmd)  # broad Bash, no prefix allowlist
+
+
+def test_unattended_commands_isolate_user_settings(repo, tmp_path):
+    t = hx.load_task(repo / ".claude/harness/tasks/eng-cross-solver.json", repo)
+    pf = tmp_path / "p.md"; pf.write_text("x")  # noqa: E702
+    for cmd in (hx.generator_cmd(t, pf), hx.evaluator_cmd(t, pf, pf)):
+        assert cmd[cmd.index("--setting-sources") + 1] == "project,local"
+
+
+def test_subprocesses_never_inherit_terminal_stdin():
+    """claude -p blocks waiting on a terminal stdin; every subprocess must use DEVNULL."""
+    import re as _re
+    for f in ("harness/run_task.py", "harness/run_queue.py", "harness/harness_ext.py",
+              "scripts/stop_oracle.py", "scripts/zonelib.py"):
+        src = (PLUGIN / f).read_text()
+        for call in _re.findall(r"subprocess\.run\((.{0,200})", src):
+            assert "DEVNULL" in call, f"{f}: subprocess.run without stdin=DEVNULL: {call[:80]}"
