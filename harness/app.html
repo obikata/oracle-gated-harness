@@ -124,42 +124,36 @@ const vlabel = m => m.status==="running" ? (m.aborting?"中断中…":"実行中
 
 async function loadQueue(){
   const r = await fetch("/api/queue"); const j = await r.json();
+  const pending = j.queue.filter(t => t.status === "pending");
   const box = $("queue"); box.innerHTML = "";
-  const stillPending = new Set(j.queue.filter(t => t.status === "pending").map(t => t.id));
+  const stillPending = new Set(pending.map(t => t.id));
   for(const id of [...S.selectedQueue]) if(!stillPending.has(id)) S.selectedQueue.delete(id);
-  for(const t of j.queue){
+  for(const t of pending){
     const d = document.createElement("div"); d.className = "th";
-    const pending = t.status === "pending";
     const head = document.createElement("div"); head.className = "t";
-    if(pending){
-      const cb = document.createElement("input");
-      cb.type = "checkbox"; cb.className = "pick"; cb.checked = S.selectedQueue.has(t.id);
-      cb.onclick = e => e.stopPropagation();
-      cb.onchange = () => { cb.checked ? S.selectedQueue.add(t.id) : S.selectedQueue.delete(t.id); updateRunBatchBtn(); };
-      head.appendChild(cb);
-    }
-    head.innerHTML += `<span class="dot ${pending?'':vclass(t)}"></span>${esc(t.title)}`;
+    const cb = document.createElement("input");
+    cb.type = "checkbox"; cb.className = "pick"; cb.checked = S.selectedQueue.has(t.id);
+    cb.onclick = e => e.stopPropagation();
+    cb.onchange = () => { cb.checked ? S.selectedQueue.add(t.id) : S.selectedQueue.delete(t.id); updateRunBatchBtn(); };
+    head.appendChild(cb);
+    head.innerHTML += `<span class="dot"></span>${esc(t.title)}`;
     d.appendChild(head);
     const sub = document.createElement("div"); sub.className = "s";
-    sub.textContent = `${t.id}${t.type?" · "+t.type:""}${pending?"":" · "+vlabel(t)}`;
+    sub.textContent = `${t.id}${t.type?" · "+t.type:""}`;
     d.appendChild(sub);
-    if(pending){
-      const btn = document.createElement("button");
-      btn.className = "run-btn"; btn.textContent = "実行";
-      btn.onclick = async (e) => {
-        e.stopPropagation();
-        btn.disabled = true; btn.textContent = "起動中…";
-        try{
-          const resp = await fetch("/api/queue/run", {method:"POST", headers:{"Content-Type":"application/json"},
-            body: JSON.stringify({source: t.source, task_id: t.task_id})});
-          if(!resp.ok){ alert((await resp.json()).error || "起動できませんでした"); btn.disabled=false; btn.textContent="実行"; return; }
-          setTimeout(() => { loadThreads(); loadQueue(); }, 1500);
-        }catch(err){ btn.disabled=false; btn.textContent="実行"; }
-      };
-      d.appendChild(btn);
-    } else if(t.run){
-      d.onclick = () => open(t.run);
-    }
+    const btn = document.createElement("button");
+    btn.className = "run-btn"; btn.textContent = "実行";
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      btn.disabled = true; btn.textContent = "起動中…";
+      try{
+        const resp = await fetch("/api/queue/run", {method:"POST", headers:{"Content-Type":"application/json"},
+          body: JSON.stringify({source: t.source, task_id: t.task_id})});
+        if(!resp.ok){ alert((await resp.json()).error || "起動できませんでした"); btn.disabled=false; btn.textContent="実行"; return; }
+        setTimeout(() => { loadThreads(); loadQueue(); }, 1500);
+      }catch(err){ btn.disabled=false; btn.textContent="実行"; }
+    };
+    d.appendChild(btn);
     box.appendChild(d);
   }
   updateRunBatchBtn();
