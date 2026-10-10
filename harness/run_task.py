@@ -90,6 +90,9 @@ def main() -> int:
         if not branch or branch == "HEAD":
             print(f"{wt} is not on a branch (detached HEAD?)", file=sys.stderr)
             return 2
+        # The zone diff must be against where this branch forked, not against whatever the
+        # base has moved to since -- otherwise every later commit on the base reads as a change.
+        base = sh(["git", "merge-base", "HEAD", base], wt).stdout.strip() or base
     else:
         branch = f"agent/{stamp}/{task['id']}"
         # outside the repo so test discovery in the main tree never sees worktree copies
