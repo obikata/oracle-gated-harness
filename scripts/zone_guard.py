@@ -47,6 +47,8 @@ def main() -> None:
         tool = data.get("tool_name", "")
         for t in targets_for(tool, data.get("tool_input") or {}):
             rel = zonelib.rel_path(t, root)
+            if rel is None and zonelib.is_agent_scratch(t):
+                continue
             is_new = None
             if rel and rel != zonelib.WHOLE_TREE and zonelib.is_append_only(rel, cfg):
                 is_new = not zonelib.exists_at_head(rel, root)

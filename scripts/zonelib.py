@@ -58,6 +58,22 @@ def rel_path(path: str, root: Path) -> str | None:
         return None
 
 
+def is_agent_scratch(path: str) -> bool:
+    """Claude Code's per-session scratchpad, <tmp>/claude-<uid>/.../scratchpad/...
+
+    Resolved first, so `..` or a symlink pointing back into the repo doesn't qualify.
+    """
+    import tempfile
+    p = Path(path)
+    if not p.is_absolute():
+        return False
+    try:
+        rel = p.resolve().relative_to(Path(tempfile.gettempdir()).resolve())
+    except ValueError:
+        return False
+    return bool(rel.parts) and rel.parts[0].startswith("claude-") and "scratchpad" in rel.parts[1:-1]
+
+
 def classify(rel: str, cfg: dict) -> str:
     zones = cfg.get("zones", {})
     for z in ZONE_ORDER:

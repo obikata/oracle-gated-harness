@@ -137,6 +137,20 @@ def test_bash(repo, cmd, expect_deny):
     assert denied(hook("zone_guard.py", bash(cmd), repo)) is expect_deny
 
 
+def test_agent_scratchpad_writable(repo, tmp_path):
+    tmp = tmp_path / "tmp"
+    scratch = tmp / "claude-1000" / "-some-project" / "0123-session" / "scratchpad"
+    scratch.mkdir(parents=True)
+    g = lambda payload: hook("zone_guard.py", payload, repo, TMPDIR=str(tmp))  # noqa: E731
+    assert not denied(g(edit(f"{scratch}/t.py")))
+    assert not denied(g(bash(f"cat > {scratch}/t.py <<'EOF'\nx\nEOF")))
+    assert denied(g(edit(f"{tmp}/claude-1000/-some-project/notes.py")))
+    assert denied(g(edit(f"{tmp}/other/scratchpad/t.py")))
+    assert denied(g(edit(f"{scratch}/../../../../../../etc/passwd")))
+    (scratch / "g.py").symlink_to(repo / "guidance.py")
+    assert denied(g(edit(str(scratch / "g.py"))))
+
+
 def test_fail_closed_unattended(repo):
     (repo / ".claude/harness/zones.json").write_text("{broken")
     assert denied(hook("zone_guard.py", edit(str(repo / "plant.py")), repo, "unattended"))
