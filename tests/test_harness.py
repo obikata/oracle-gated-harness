@@ -641,3 +641,64 @@ def test_narration_prompt(repo):
     cfg["narrate"] = {"language": "Japanese", "addressee": "Yohei"}
     p = hx.generator_prompt(t, cfg)
     assert "in Japanese, addressed to Yohei" in p
+
+
+# ------------------------------------------------------------------ crash recovery (active-run markers)
+
+def _dead_pid() -> int:
+    p = subprocess.Popen(["true"])
+    p.wait()
+    return p.pid
+
+
+def test_active_markers_and_liveness(repo):
+    hx.write_active(repo, "t1", {"kind": "task"})
+    rec = hx.read_active(repo)["t1"]
+    assert rec["pid"] == os.getpid() and rec["boot_id"] == hx.boot_id()
+    assert hx.active_alive(rec, "python") or hx.active_alive(rec, "pytest")
+    assert not hx.active_alive({**rec, "pid": _dead_pid()}, "python")
+    assert not hx.active_alive({**rec, "boot_id": "some-earlier-boot"}, "python")
+    assert not hx.active_alive(rec, "run_task.py")      # alive, but not the program that wrote it
+    hx.clear_active(repo, "t1")
+    assert hx.read_active(repo) == {}
+
+
+def test_recover_prepares_and_lists_interrupted_runs(repo, tmp_path):
+    th = _th()
+    import recover
+    wt = tmp_path / "wt"
+    subprocess.run(["git", "worktree", "add", "-q", "-b", "agent/x/demo", str(wt)], cwd=repo, check=True)
+    (wt / "reports").mkdir()
+    (wt / "reports/partial_result.json").write_text("{}")
+    td = th.create(repo, "20261010-000000-demo", {"task": "demo", "title": "Demo", "type": "research"})
+    th.post(td, "generator", "text", "Half-way through the sweep.")
+    spec = repo / ".harness/queue/demo.json"
+    spec.parent.mkdir(parents=True, exist_ok=True)
+    spec.write_text("{}")
+    dead = _dead_pid()
+    hx.write_active(repo, "demo", {"kind": "task", "task_path": str(spec), "task_id": None,
+                                   "worktree": str(wt), "branch": "agent/x/demo", "thread": str(td)})
+    hx.write_active(repo, "_queue-1", {"kind": "queue", "deadline": 1e18, "model": None,
+                                       "remaining": [str(spec)]})
+    hx.write_active(repo, "_queue-2", {"kind": "queue", "deadline": 1.0, "model": None, "remaining": [str(spec)]})
+    for name in ("demo", "_queue-1", "_queue-2"):
+        p = repo / hx.ACTIVE_DIR / f"{name}.json"
+        p.write_text(json.dumps({**json.loads(p.read_text()), "pid": dead}))
+
+    out = subprocess.run([sys.executable, str(PLUGIN / "harness/recover.py"), "--dry-run"], cwd=repo,
+                         capture_output=True, text=True, timeout=60).stdout
+    assert f"--resume-worktree {wt}" in out
+    assert "[_queue-1] continue queue" in out and str(spec) in out
+    assert "[_queue-2] not continuing: its time budget has run out" in out
+    assert th.read_meta(td)["status"] == "running"                     # dry run changed nothing
+    assert not (wt / "reports/progress/demo.md").exists()
+
+    cfg = zonelib.load_config(repo)
+    cmd = recover.prepare("demo", hx.read_active(repo)["demo"], cfg, dry_run=False)
+    assert cmd[-2:] == ["--resume-worktree", str(wt)]
+    note = (wt / "reports/progress/demo.md").read_text()
+    assert "reports/partial_result.json" in note or "reports/" in note
+    assert "Half-way through the sweep." in note
+    assert th.read_meta(td)["status"] == "interrupted"
+    recover.prepare("demo", hx.read_active(repo)["demo"], cfg, dry_run=False)   # second crash: append, keep
+    assert (wt / "reports/progress/demo.md").read_text().startswith(note)

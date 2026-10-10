@@ -112,6 +112,8 @@ def main() -> int:
     th.post(td, "harness", "status", th.t(cfg, "start", branch=branch, iters=b["max_iterations"],
                                           turns=b["max_turns"], usd=b["max_budget_usd"]))
     print(f"[{task['id']}] thread: {td}   (app: python3 {Path(__file__).parent / 'app.py'})", flush=True)
+    hx.write_active(repo, task["id"], {"kind": "task", "task_path": str(Path(a.task).resolve()), "task_id": a.id,
+                                       "worktree": str(wt), "branch": branch, "thread": str(td), "started": th.now()})
     gen_env = hx.generator_env()
     gen_env[th.THREAD_ENV] = str(td)
 
@@ -204,6 +206,7 @@ def main() -> int:
 
     if not a.keep_worktree:
         sh(["git", "worktree", "remove", "--force", str(wt)], repo)
+    hx.clear_active(repo, task["id"])
     return 0 if verdict["verdict"] == "pass" else 1
 
 

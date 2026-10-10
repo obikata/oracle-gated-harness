@@ -110,20 +110,25 @@ def main() -> int:
 
     qdir = repo / ".harness" / "queue"
     qdir.mkdir(parents=True, exist_ok=True)
-    for p, t in tasks:
+    specs = []
+    for _, t in tasks:
+        spec = qdir / f"{t['id']}.json"   # normalized spec (legacy tasks converted)
+        spec.write_text(json.dumps({k: v for k, v in t.items() if k != "_legacy"}, indent=2), encoding="utf-8")
+        specs.append(spec)
+    queue_marker = f"_queue-{time.strftime('%Y%m%d-%H%M%S')}"
+    for i, ((p, t), spec) in enumerate(zip(tasks, specs)):
         if stop_file.exists():
             print(f"STOP file {stop_file.relative_to(repo)} present: halting"); break
         if time.time() >= deadline:
             print("global time budget reached: halting"); break
         if (problem := hx.disk_problem(repo, cfg)):
             print(f"{problem}: halting", flush=True)
-            rows.extend({"task": t_["id"], "verdict": "skipped", "summary": problem}
-                        for _, t_ in tasks[tasks.index((p, t)):])
+            rows.extend({"task": t_["id"], "verdict": "skipped", "summary": problem} for _, t_ in tasks[i:])
             break
+        hx.write_active(repo, queue_marker, {"kind": "queue", "current": t["id"], "deadline": deadline,
+                                             "model": a.model, "remaining": [str(s) for s in specs[i + 1:]]})
         print(f"[{time.strftime('%H:%M:%S')}] start {t['id']}", flush=True)
         before = set(runs_dir.glob(f"*-{t['id']}.json"))
-        spec = qdir / f"{t['id']}.json"   # normalized spec (legacy tasks converted)
-        spec.write_text(json.dumps({k: v for k, v in t.items() if k != "_legacy"}, indent=2), encoding="utf-8")
         cmd = [sys.executable, str(HERE / "run_task.py"), "--task", str(spec)] + (["--model", a.model] if a.model else [])
         try:
             r = subprocess.run(stdin=subprocess.DEVNULL, args=cmd, cwd=repo, capture_output=True, text=True,
@@ -137,6 +142,7 @@ def main() -> int:
         except subprocess.TimeoutExpired as e:
             rows.append({"task": t["id"], "verdict": "crash", "summary": "timeout (6h)", "error": str(e)})
         print(f"[{time.strftime('%H:%M:%S')}] done  {t['id']} -> {rows[-1]['verdict']}", flush=True)
+    hx.clear_active(repo, queue_marker)
 
     md = report_md(rows, started, (time.time() - t0) / 60)
     out = runs_dir / f"{time.strftime('%Y%m%d-%H%M')}-triage.md"

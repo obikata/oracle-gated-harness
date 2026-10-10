@@ -240,6 +240,59 @@ def generator_cmd(task: dict, prompt_file: str | Path, model: str | None = None)
     return cmd
 
 
+# ----------------------------------------------------------------------------- active-run markers
+# run_task.py / run_queue.py write a marker when they start and delete it when they finish normally.
+# A marker whose process is gone means the run was killed (reboot, ENOSPC, OOM...): recover.py resumes it.
+
+ACTIVE_DIR = Path(".harness") / "active"
+
+
+def boot_id() -> str:
+    try:
+        return Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    except OSError:
+        return ""
+
+
+def write_active(repo: Path, name: str, rec: dict) -> Path:
+    d = Path(repo) / ACTIVE_DIR
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / f"{name}.json"
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"pid": os.getpid(), "boot_id": boot_id(), **rec}, indent=2), encoding="utf-8")
+    os.replace(tmp, p)
+    return p
+
+
+def clear_active(repo: Path, name: str) -> None:
+    (Path(repo) / ACTIVE_DIR / f"{name}.json").unlink(missing_ok=True)
+
+
+def read_active(repo: Path) -> dict[str, dict]:
+    d = Path(repo) / ACTIVE_DIR
+    out = {}
+    for p in sorted(d.glob("*.json")) if d.is_dir() else []:
+        try:
+            out[p.stem] = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+    return out
+
+
+def active_alive(rec: dict, needle: str) -> bool:
+    """The marker's process is still the run that wrote it (same boot, pid alive, same program)."""
+    if rec.get("boot_id") and rec["boot_id"] != boot_id():
+        return False
+    pid = int(rec.get("pid", 0))
+    if pid <= 0:
+        return False
+    try:
+        cmd = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
+    except OSError:
+        return False
+    return needle in cmd
+
+
 def disk_problem(repo: Path, cfg: dict) -> str | None:
     """Refuse to start a task on a nearly full disk: a run dies mid-way on ENOSPC otherwise."""
     import shutil
