@@ -80,6 +80,10 @@ def main() -> int:
         print(f"\nbranch would be {branch} from {base[:10]}")
         return 0
 
+    if (problem := hx.disk_problem(repo, cfg)):
+        print(problem, file=sys.stderr)
+        return 2
+
     if a.resume_worktree:
         wt = Path(a.resume_worktree).resolve()
         branch = sh(["git", "rev-parse", "--abbrev-ref", "HEAD"], wt).stdout.strip()

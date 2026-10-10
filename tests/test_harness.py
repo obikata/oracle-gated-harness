@@ -554,6 +554,42 @@ def test_run_streaming_abort(tmp_path):
     assert rc == 130 and th.read_thread(d)[-1]["text"].startswith("Aborted")
 
 
+def test_kill_reaches_tool_children_in_other_process_groups(tmp_path):
+    """Abort must also kill what the agent spawned (Bash tools run in their own process group)."""
+    th = _th()
+    d = th.create(tmp_path, "run-tree", {"task": "t", "title": "T"})
+    pidf = tmp_path / "child.pid"
+    fake = tmp_path / "agent.py"
+    fake.write_text(
+        "import subprocess,time,sys\n"
+        f"c = subprocess.Popen(['sleep','300'], start_new_session=True, stdout=subprocess.DEVNULL)\n"
+        f"open({str(pidf)!r},'w').write(str(c.pid))\n"
+        "while True:\n    print('{}', flush=True); time.sleep(0.1)\n")
+    import threading
+    threading.Timer(1.5, lambda: (d / "ABORT").write_text("x")).start()
+    rc, _ = hx.run_streaming([sys.executable, str(fake)], tmp_path, dict(os.environ), 60, tmp_path / "g.jsonl",
+                             thread_dir=d, cfg={})
+    assert rc == 130
+    child = int(pidf.read_text())
+    import time
+    for _ in range(20):
+        try:
+            os.kill(child, 0)
+        except ProcessLookupError:
+            break
+        if open(f"/proc/{child}/stat").read().rsplit(")", 1)[1].split()[0] == "Z":
+            break  # zombie awaiting reap by init: already dead
+        time.sleep(0.1)
+    else:
+        os.kill(child, 9)
+        assert False, "tool child survived the abort"
+
+
+def test_disk_problem(tmp_path):
+    assert hx.disk_problem(tmp_path, {"min_free_gb": 0}) is None
+    assert "not starting" in hx.disk_problem(tmp_path, {"min_free_gb": 1e9})
+
+
 def test_app_api(tmp_path):
     th = _th()
     sys.path.insert(0, str(PLUGIN / "harness"))

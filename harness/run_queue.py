@@ -115,6 +115,11 @@ def main() -> int:
             print(f"STOP file {stop_file.relative_to(repo)} present: halting"); break
         if time.time() >= deadline:
             print("global time budget reached: halting"); break
+        if (problem := hx.disk_problem(repo, cfg)):
+            print(f"{problem}: halting", flush=True)
+            rows.extend({"task": t_["id"], "verdict": "skipped", "summary": problem}
+                        for _, t_ in tasks[tasks.index((p, t)):])
+            break
         print(f"[{time.strftime('%H:%M:%S')}] start {t['id']}", flush=True)
         before = set(runs_dir.glob(f"*-{t['id']}.json"))
         spec = qdir / f"{t['id']}.json"   # normalized spec (legacy tasks converted)

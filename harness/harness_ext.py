@@ -240,6 +240,57 @@ def generator_cmd(task: dict, prompt_file: str | Path, model: str | None = None)
     return cmd
 
 
+def disk_problem(repo: Path, cfg: dict) -> str | None:
+    """Refuse to start a task on a nearly full disk: a run dies mid-way on ENOSPC otherwise."""
+    import shutil
+    need = float(cfg.get("min_free_gb", 5))
+    free = shutil.disk_usage(repo).free / 1e9
+    if free >= need:
+        return None
+    return f"only {free:.1f} GB free on the repository's disk (min_free_gb = {need:g}); not starting"
+
+
+def _die_with_parent() -> None:
+    """preexec_fn: SIGTERM the child if this process dies (Linux PR_SET_PDEATHSIG), so a crashed
+    run_task.py doesn't leave an orphaned agent running with nobody to commit its work."""
+    try:
+        import ctypes
+        import signal
+        ctypes.CDLL(None, use_errno=True).prctl(1, signal.SIGTERM)
+    except Exception:
+        pass
+
+
+def _descendants(pid: int) -> list[int]:
+    """All descendant pids via /proc. Tool subprocesses run in their own process groups,
+    so killing the agent's group alone would miss them."""
+    children: dict[int, list[int]] = {}
+    for d in Path("/proc").iterdir():
+        if not d.name.isdigit():
+            continue
+        try:
+            ppid = int((d / "stat").read_text().rsplit(")", 1)[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            continue
+        children.setdefault(ppid, []).append(int(d.name))
+    out, stack = [], [pid]
+    while stack:
+        for c in children.get(stack.pop(), []):
+            out.append(c)
+            stack.append(c)
+    return out
+
+
+def kill_tree(p: subprocess.Popen) -> None:
+    import signal
+    victims = [p.pid, *(_descendants(p.pid) if sys.platform.startswith("linux") else [])]
+    for pid in victims:  # collected before killing, or they'd be reparented out of reach
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+
 def run_streaming(cmd: list[str], cwd: Path, env: dict, timeout: float, log_path: Path,
                   thread_dir: Path | None = None, cfg: dict | None = None) -> tuple[int, str]:
     """Run a stream-json `claude -p`, appending every event to `log_path` as it arrives and,
@@ -257,7 +308,8 @@ def run_streaming(cmd: list[str], cwd: Path, env: dict, timeout: float, log_path
     why = {"v": None}
     with open(log_path, "w", encoding="utf-8") as out, open(err_path, "w", encoding="utf-8") as err:
         p = subprocess.Popen(cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                             stderr=err, text=True, bufsize=1)
+                             stderr=err, text=True, bufsize=1,
+                             preexec_fn=_die_with_parent if sys.platform.startswith("linux") else None)
         deadline = _time.time() + timeout
 
         def watchdog() -> None:
@@ -267,24 +319,28 @@ def run_streaming(cmd: list[str], cwd: Path, env: dict, timeout: float, log_path
                 elif thread_dir is not None and (Path(thread_dir) / "ABORT").exists():
                     why["v"] = "abort"
                 if why["v"]:
-                    p.kill()
+                    kill_tree(p)
                     return
                 _time.sleep(1.0)
 
         threading.Thread(target=watchdog, daemon=True).start()
         assert p.stdout is not None
-        for line in p.stdout:
-            out.write(line)
-            out.flush()
-            try:
-                ev = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if ev.get("type") == "result":
-                result = ev.get("result") or result
-            if thread_dir is not None:
-                for role, kind, text, meta in _th.stream_event_to_posts(ev, cfg):
-                    _th.post(thread_dir, role, kind, text, **meta)
+        try:
+            for line in p.stdout:
+                out.write(line)
+                out.flush()
+                try:
+                    ev = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if ev.get("type") == "result":
+                    result = ev.get("result") or result
+                if thread_dir is not None:
+                    for role, kind, text, meta in _th.stream_event_to_posts(ev, cfg):
+                        _th.post(thread_dir, role, kind, text, **meta)
+        except BaseException:
+            kill_tree(p)  # e.g. ENOSPC writing the log: don't leave the agent running unwatched
+            raise
         rc = p.wait()
     if why["v"]:
         with open(log_path, "a", encoding="utf-8") as out:
