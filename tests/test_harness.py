@@ -712,3 +712,28 @@ def test_auth_failure_is_infrastructure_not_a_verdict():
     assert hx.EXIT_AUTH not in (0, 1, 2, 124, 130)   # distinct from pass/fail/usage/timeout/abort
     src = (PLUGIN / "harness/run_queue.py").read_text()
     assert "if not auth_halt:" in src and "hx.EXIT_AUTH" in src   # queue keeps its marker for recover.py
+
+
+def test_bash_targets_follow_cd_tilde_and_variables(repo, tmp_path):
+    g = lambda cmd, mode="unattended": denied(hook("zone_guard.py", bash(cmd), repo, mode))  # noqa: E731
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    # the terminal-law-v2 bypass: cd out of the repo, then write a relative path
+    assert g(f"cd {outside} && echo hi >> MEMORY.md")
+    assert g(f"cd {outside}; sed -i 's/a/b/' notes.md")
+    assert g("echo hi >> ~/.bashrc")
+    # cd back into the repo keeps the normal zone rules
+    assert not g(f"cd {repo}/viewer && echo hi > out.txt")
+    assert g(f"cd {repo} && echo hi > tests/test_oracle.py")
+    # variables assigned earlier in the same command are expanded
+    assert g(f"S={outside}; echo x > $S/f.txt")
+    assert not g("OUT=reports/x.md; echo hi > $OUT")
+    assert g("D=tests; cp scratch/a.py $D/test_oracle.py")
+    # targets the guard can't know: denied unattended, allowed interactive
+    assert g("echo x > $UNSET_VAR_OGH_TEST/f")
+    assert g("echo x > $(mktemp)")
+    assert not g("echo x > $UNSET_VAR_OGH_TEST/f", "interactive")
+    # cp/install/ln only write their destination
+    assert not g("cp guidance.py scratch/guidance_copy.py")
+    assert g("cp scratch/g.py guidance.py")
+    assert g("mv guidance.py scratch/g.py")          # mv removes its source

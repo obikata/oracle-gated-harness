@@ -186,6 +186,8 @@ def generator_prompt(task: dict, cfg: dict | None = None, repo_root: str | Path 
         "- Zones are enforced by hooks. Oracles and harness config are frozen (Z0); never try to edit them.",
         f"- Core changes (Z1) go into {d['proposals_dir']}{task['id']}/*.patch (git diff format), never applied directly.",
         "- Do not git commit, push or switch branches; the harness commits your work.",
+        "- Write only inside this worktree (and your session scratchpad). Do not save Claude memories or touch "
+        "~/.claude or anything else outside it: findings go in your report and the handoff file.",
         "- You are a ONE-SHOT headless run: nobody will resume you or check on anything you leave running. "
         "Run slow sweeps in the foreground to completion; if something cannot finish within your turn budget, "
         "scope it down (fewer trials, narrower grid) and say so in your report. Never background a job.",

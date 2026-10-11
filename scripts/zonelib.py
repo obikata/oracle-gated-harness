@@ -16,6 +16,7 @@ from pathlib import Path
 ZONE_ORDER = ("Z0", "Z1", "Z2", "Z3")
 
 WHOLE_TREE = "<whole-tree>"
+UNRESOLVED = "<unresolved>"   # a write target the shell would only know at run time ($VAR, $(...), cd into one)
 UNATTENDED = "unattended"
 INTERACTIVE = "interactive"
 
@@ -46,8 +47,8 @@ def mode() -> str:
 
 def rel_path(path: str, root: Path) -> str | None:
     """Repo-relative POSIX path, or None if the path is outside the repo."""
-    if path == WHOLE_TREE:
-        return WHOLE_TREE
+    if path in (WHOLE_TREE, UNRESOLVED):
+        return path
     p = Path(path)
     if not p.is_absolute():
         p = root / p
@@ -105,6 +106,11 @@ def decide(rel: str | None, cfg: dict, run_mode: str, is_new: bool | None = None
         if run_mode == UNATTENDED:
             return False, "Write outside the repository is not allowed in unattended mode."
         return True, "outside repo (interactive)"
+    if rel == UNRESOLVED:
+        if run_mode == UNATTENDED:
+            return False, ("Can't tell where this command writes: the target uses a shell variable, command "
+                           "substitution or a cd into one. Use a literal path.")
+        return True, "unresolved target (interactive)"
     if rel == WHOLE_TREE:
         if run_mode == UNATTENDED:
             return False, ("Whole-tree git operations (reset/stash/clean) are not allowed in "
@@ -142,39 +148,70 @@ _GIT_WRITE = {"checkout", "restore", "reset", "rm", "mv", "apply", "stash", "cle
 _REDIRECT_NOOP = {"/dev/null", "/dev/stdout", "/dev/stderr", "/dev/zero"}
 
 
+_DEST_ONLY_CMDS = {"cp", "install", "ln"}   # only the last path is written
+_ASSIGN = re.compile(r"^(?:export\s+)?([A-Za-z_]\w*)=(.*)$")
+_VAR = re.compile(r"\$(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))")
+
+
+def _resolve(t: str, cwd: str | None, env: dict[str, str]) -> str:
+    """Make a write target absolute where the shell would: ~, variables set earlier in the same
+    command (or in the environment), and the effect of an earlier `cd`. Anything still dynamic
+    ($(...), `...`, unknown variables) can't be judged, so it becomes UNRESOLVED."""
+    t = t.strip("'\"")
+    t = _VAR.sub(lambda m: env.get(m.group(1) or m.group(2), m.group(0)), t)
+    if t.startswith("~"):
+        t = os.path.expanduser(t)
+    if "$" in t or "`" in t:
+        return UNRESOLVED
+    if os.path.isabs(t) or cwd is None:
+        return t
+    return UNRESOLVED if cwd == UNRESOLVED else os.path.join(cwd, t)
+
+
 def bash_write_targets(command: str) -> list[str]:
-    """Paths a shell command is likely to modify. Conservative, not complete."""
+    """Paths a shell command is likely to modify. Conservative, not complete: subshells and
+    `bash -c` bodies aren't followed (the post-run diff check is the backstop inside the repo)."""
     targets: list[str] = []
-    # redirections:  > file, >> file, 2> file
-    for m in re.finditer(r"(?<![<>&\d])\d?>>?\s*([^\s;&|<>]+)", command):
-        t = m.group(1)
-        if t not in _REDIRECT_NOOP:
-            targets.append(t)
-    for segment in re.split(r"&&|\|\||;|\|", command):
+    cwd: str | None = None                       # None = the project root the hook resolves against
+    env = dict(os.environ)
+    for segment in re.split(r"&&|\|\||;|\||\n", command.replace("\\\n", " ")):
+        for m in re.finditer(r"(?<![<>&\d])\d?>>?\s*([^\s;&|<>]+)", segment):
+            t = m.group(1)
+            if t.strip("'\"") not in _REDIRECT_NOOP:
+                targets.append(_resolve(t, cwd, env))
         try:
             toks = shlex.split(segment, posix=True)
         except ValueError:
             toks = segment.split()
         if not toks:
             continue
-        # strip env assignments / sudo
-        while toks and ("=" in toks[0] and not toks[0].startswith("-") or toks[0] == "sudo"):
+        if toks[0] == "export":
+            toks = toks[1:]
+        while toks and (_ASSIGN.match(toks[0]) or toks[0] == "sudo"):
+            m = _ASSIGN.match(toks[0])
+            if m:
+                env[m.group(1)] = _resolve(m.group(2), cwd, env) if m.group(2).startswith(("~", "$")) else m.group(2)
             toks = toks[1:]
         if not toks:
             continue
         cmd, args = os.path.basename(toks[0]), toks[1:]
         paths = [a for a in args if not a.startswith("-")]
-        if cmd in _WRITE_CMDS:
-            targets.extend(paths)
+        res = lambda ps: [_resolve(p, cwd, env) for p in ps]  # noqa: E731
+        if cmd in ("cd", "pushd"):
+            cwd = _resolve(paths[0] if paths else "~", cwd, env)
+        elif cmd in _DEST_ONLY_CMDS:
+            targets.extend(res(paths[-1:]))
+        elif cmd in _WRITE_CMDS:
+            targets.extend(res(paths))
         elif cmd == "sed" and any(a.startswith("-i") or a == "--in-place" for a in args):
-            targets.extend(paths[1:] if paths else [])
+            targets.extend(res(paths[1:] if paths else []))
         elif cmd == "git" and args and args[0] in _GIT_WRITE:
-            targets.extend(p for p in paths[1:] if p != "--")
+            targets.extend(res(p for p in paths[1:] if p != "--"))
             if args[0] in {"reset", "stash", "clean"} and len(paths) <= 1:
                 targets.append(WHOLE_TREE)  # whole-tree operation
         elif cmd in {"python", "python3"} and "-c" in args:
             # can't see inside; flag protected names mentioned literally
             body = args[args.index("-c") + 1] if args.index("-c") + 1 < len(args) else ""
             if re.search(r"open\(|write_text|write_bytes|unlink|rename|remove", body):
-                targets.extend(re.findall(r"['\"]([^'\"]+\.\w+)['\"]", body))
+                targets.extend(res(re.findall(r"['\"]([^'\"]+\.\w+)['\"]", body)))
     return targets
