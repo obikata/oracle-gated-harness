@@ -25,7 +25,7 @@ sys.path.insert(0, str(HERE))
 import harness_ext as hx  # noqa: E402
 import zonelib  # noqa: E402
 
-ORDER = {"pass": 0, "needs_human": 1, "fail": 2, "crash": 3, "invalid": 4}
+ORDER = {"pass": 0, "needs_human": 1, "fail": 2, "auth_error": 3, "crash": 4, "invalid": 5}
 
 
 def collect(repo: Path, queue: str | None, task_files: list[str] | None = None) -> list[Path]:
@@ -42,7 +42,7 @@ def report_md(rows: list[dict], started: str, minutes: float) -> str:
     n = {k: sum(r["verdict"] == k for r in rows) for k in ORDER}
     out = [f"# Agent run triage — {started}", "",
            f"{len(rows)} tasks in {minutes:.0f} min · **{n['pass']} pass** · {n['needs_human']} needs_human · "
-           f"{n['fail']} fail · {n['crash'] + n['invalid']} crash/invalid", "",
+           f"{n['fail']} fail · {n['auth_error']} auth_error · {n['crash'] + n['invalid']} crash/invalid", "",
            "| verdict | task | status | full oracle | zones | branch |", "|---|---|---|---|---|---|"]
     for r in rows:
         out.append(f"| {r['verdict']} | {r['task']} | {r.get('status', '')} | {r.get('oracle_full', '')} | "
@@ -116,6 +116,7 @@ def main() -> int:
         spec.write_text(json.dumps({k: v for k, v in t.items() if k != "_legacy"}, indent=2), encoding="utf-8")
         specs.append(spec)
     queue_marker = f"_queue-{time.strftime('%Y%m%d-%H%M%S')}"
+    auth_halt = False
     for i, ((p, t), spec) in enumerate(zip(tasks, specs)):
         if stop_file.exists():
             print(f"STOP file {stop_file.relative_to(repo)} present: halting"); break
@@ -134,6 +135,13 @@ def main() -> int:
             r = subprocess.run(stdin=subprocess.DEVNULL, args=cmd, cwd=repo, capture_output=True, text=True,
                                timeout=max(60.0, min(6 * 3600, deadline - time.time() + 3600)))
             new = sorted(set(runs_dir.glob(f"*-{t['id']}.json")) - before)
+            if r.returncode == hx.EXIT_AUTH:
+                rows.append({"task": t["id"], "verdict": "auth_error",
+                             "summary": "claude CLI could not authenticate; queue halted. Log in again, then run "
+                                        "harness/recover.py to resume this run and the rest of the queue."})
+                print(f"[{time.strftime('%H:%M:%S')}] auth failure on {t['id']}: halting, kept for recover.py", flush=True)
+                auth_halt = True
+                break
             if new:
                 rows.append(json.loads(new[-1].read_text(encoding="utf-8")))
             else:
@@ -142,7 +150,8 @@ def main() -> int:
         except subprocess.TimeoutExpired as e:
             rows.append({"task": t["id"], "verdict": "crash", "summary": "timeout (6h)", "error": str(e)})
         print(f"[{time.strftime('%H:%M:%S')}] done  {t['id']} -> {rows[-1]['verdict']}", flush=True)
-    hx.clear_active(repo, queue_marker)
+    if not auth_halt:  # an auth halt leaves the marker so recover.py continues the queue
+        hx.clear_active(repo, queue_marker)
 
     md = report_md(rows, started, (time.time() - t0) / 60)
     out = runs_dir / f"{time.strftime('%Y%m%d-%H%M')}-triage.md"

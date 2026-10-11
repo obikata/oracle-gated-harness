@@ -240,6 +240,17 @@ def generator_cmd(task: dict, prompt_file: str | Path, model: str | None = None)
     return cmd
 
 
+# ----------------------------------------------------------------------------- infrastructure failures
+
+AUTH_MARKERS = ("Failed to authenticate", "OAuth session expired", "Invalid API key", "Please run /login")
+EXIT_AUTH = 75  # EX_TEMPFAIL: the run is kept (worktree + active marker) for recover.py
+
+
+def auth_failure(text: str | None) -> bool:
+    """The claude CLI couldn't authenticate: nothing the agent did is at fault, and every later task would fail too."""
+    return bool(text) and any(m in text for m in AUTH_MARKERS)
+
+
 # ----------------------------------------------------------------------------- active-run markers
 # run_task.py / run_queue.py write a marker when they start and delete it when they finish normally.
 # A marker whose process is gone means the run was killed (reboot, ENOSPC, OOM...): recover.py resumes it.
@@ -508,7 +519,7 @@ def evaluator_system_prompt(worktree: str | Path) -> str:
 
 
 def evaluator_cmd(task: dict, schema_path: str | Path, system_prompt_file: str | Path,
-                  max_turns: int = 30, max_budget_usd: float = 2.0) -> list[str]:
+                  max_turns: int = 60, max_budget_usd: float = 4.0) -> list[str]:
     prompt = (f"Evaluate task {task['id']}. Evidence is in .harness/{task['id']}/. "
               "Follow your instructions exactly and return the verdict JSON.")
     return [
@@ -556,8 +567,13 @@ def run_evaluator(worktree: str | Path, task: dict, base: str, logs: dict[str, s
     r = subprocess.run(stdin=subprocess.DEVNULL, args=evaluator_cmd(task, schema, sp), cwd=wt, capture_output=True,
                        text=True, timeout=timeout_s, env=env)
     if r.returncode != 0:
-        return {"verdict": "needs_human", "summary": f"Evaluator exited {r.returncode}.",
-                "criteria": [], "issues": [], "ratchet_candidates": [], "_raw": (r.stdout + r.stderr)[-2000:]}
+        raw = (r.stdout + r.stderr)[-2000:]
+        if auth_failure(raw):
+            return {"verdict": "auth_error", "summary": "Evaluator could not authenticate (claude CLI login expired).",
+                    "criteria": [], "issues": [], "ratchet_candidates": [], "_raw": raw}
+        why = "it ran out of turns" if "error_max_turns" in raw else f"exit code {r.returncode}"
+        return {"verdict": "needs_human", "summary": f"Evaluator did not finish: {why}.",
+                "criteria": [], "issues": [], "ratchet_candidates": [], "_raw": raw}
     verdict = parse_evaluator_output(r.stdout)
     (wt / ".harness" / task["id"] / "verdict.json").write_text(json.dumps(verdict, indent=2), encoding="utf-8")
     return verdict

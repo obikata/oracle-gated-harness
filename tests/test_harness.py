@@ -702,3 +702,13 @@ def test_recover_prepares_and_lists_interrupted_runs(repo, tmp_path):
     assert th.read_meta(td)["status"] == "interrupted"
     recover.prepare("demo", hx.read_active(repo)["demo"], cfg, dry_run=False)   # second crash: append, keep
     assert (wt / "reports/progress/demo.md").read_text().startswith(note)
+
+
+def test_auth_failure_is_infrastructure_not_a_verdict():
+    assert hx.auth_failure("Failed to authenticate: OAuth session expired and could not be refreshed")
+    assert hx.auth_failure('{"result":"Invalid API key · Please run /login"}')
+    assert not hx.auth_failure("All 30 seeds landed; authentication of the sensor model is out of scope.")
+    assert not hx.auth_failure(None) and not hx.auth_failure("")
+    assert hx.EXIT_AUTH not in (0, 1, 2, 124, 130)   # distinct from pass/fail/usage/timeout/abort
+    src = (PLUGIN / "harness/run_queue.py").read_text()
+    assert "if not auth_halt:" in src and "hx.EXIT_AUTH" in src   # queue keeps its marker for recover.py

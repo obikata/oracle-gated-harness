@@ -39,6 +39,14 @@ def run_oracle(cmd: str, wt: Path, timeout: int) -> tuple[bool, str]:
     return r.returncode == 0, r.stdout + r.stderr
 
 
+def _keep_for_recovery(td: Path, task: dict, wt: Path, why: str) -> int:
+    """Infrastructure failure, not a verdict: keep the worktree and the active marker so recover.py resumes it."""
+    th.post(td, "harness", "status", f"Stopped: {why}. The run is kept for recover.py (log in again, then run it).")
+    th.write_meta(td, {"status": "interrupted", "verdict": None})
+    print(f"[{task['id']}] {why}; worktree {wt} kept for recover.py", file=sys.stderr, flush=True)
+    return hx.EXIT_AUTH
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--task", required=True, help=".json spec, or .jsonl (with --id) incl. legacy night_run tasks")
@@ -135,6 +143,8 @@ def main() -> int:
         _rc, res = hx.run_streaming(hx.generator_cmd(task, prompt_file, a.model), wt, gen_env,
                                     task_timeout, log, thread_dir=td, cfg=cfg)
         report = res or report or f"(no final result; generator rc={_rc}, see {log.name})"
+        if hx.auth_failure(res):
+            return _keep_for_recovery(td, task, wt, "the agent could not authenticate (claude CLI login expired)")
         if _rc == 130:
             aborted, status = True, "aborted"
             break
@@ -178,6 +188,8 @@ def main() -> int:
         else:
             th.post(td, "harness", "status", th.t(cfg, "eval_start"))
             verdict = hx.run_evaluator(wt, task, base, logs, zc)
+            if verdict["verdict"] == "auth_error":
+                return _keep_for_recovery(td, task, wt, verdict["summary"])
     th.post(td, "evaluator", "verdict", th.t(cfg, "verdict", verdict=verdict["verdict"],
                                              summary=verdict.get("summary", "")),
             verdict=verdict["verdict"], issues=verdict.get("issues", []),
