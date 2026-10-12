@@ -331,6 +331,18 @@ def test_evidence_diff_includes_new_files(repo):
     assert "analysis/new.py" in patch and ".harness" not in patch
 
 
+def test_evidence_diff_truncates_bulk_data(repo, monkeypatch):
+    monkeypatch.setattr(hx, "DIFF_MAX_BYTES", 2000)
+    (repo / "analysis").mkdir()
+    (repo / "analysis/run.py").write_text("print('kept')\n")
+    (repo / "analysis/per_seed.csv").write_text("".join(f"{i},0.1\n" for i in range(hx.DIFF_FILE_MAX_LINES + 5)))
+    t = hx.load_task(repo / ".claude/harness/tasks/eng-cross-solver.json", repo)
+    patch = (hx.write_evidence(repo, t, "HEAD", {}, hx.check_diff_zones(repo, "HEAD")) / "diff.patch").read_text()
+    assert patch.startswith("# diff truncated")
+    assert "+print('kept')" in patch                       # small file: full diff
+    assert "analysis/per_seed.csv" in patch and "+3000,0.1" not in patch   # big file: stat only
+
+
 # ------------------------------------------------------------------ append-only (new tests allowed, existing frozen)
 
 def _append_only(repo):
