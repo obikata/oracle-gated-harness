@@ -191,6 +191,11 @@ def generator_prompt(task: dict, cfg: dict | None = None, repo_root: str | Path 
         "- You are a ONE-SHOT headless run: nobody will resume you or check on anything you leave running. "
         "Run slow sweeps in the foreground to completion; if something cannot finish within your turn budget, "
         "scope it down (fewer trials, narrower grid) and say so in your report. Never background a job.",
+        "- Keep your context small; every turn re-reads the whole conversation, so output you print is paid for "
+        "again on every later turn. Send long output to a file and print only a short summary (a count, a few "
+        "lines, one table). Don't cat data files or whole logs.",
+        "- Long computations: make each foreground chunk use most of the 10-minute Bash limit (about 9 minutes) "
+        "and end with one status line. Don't poll with short sleeps or re-check between chunks.",
         "- Follow CLAUDE.md.",
     ]
     nar = (cfg or {}).get("narrate")

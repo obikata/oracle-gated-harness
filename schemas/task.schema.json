@@ -103,6 +103,10 @@
           "description": "Must be under the project's research_dir (default reports/research/)."
         }
       }
+    },
+    "model": {
+      "type": "string",
+      "description": "Generator model for this task (e.g. 'sonnet' for mechanical resumes or extensions, 'opus' for design and diagnosis). run_task --model overrides it."
     }
   }
 }

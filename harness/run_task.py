@@ -81,7 +81,7 @@ def main() -> int:
         import tempfile
         with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as tf:
             tf.write(prompt)
-        cmd = hx.generator_cmd(task, tf.name, a.model)[:-1] + ["<prompt>"]
+        cmd = hx.generator_cmd(task, tf.name, a.model or task.get("model"))[:-1] + ["<prompt>"]
         print(prompt, "\n\n--- generator cmd ---")
         print(shlex.join(cmd))
         branch = f"agent/{stamp}/{task['id']}"
@@ -140,7 +140,7 @@ def main() -> int:
         print(f"[{task['id']}] iteration {it}")
         th.post(td, "harness", "status", th.t(cfg, "iter", it=it))
         log = prompt_file.parent / f"generator_{it}.jsonl"
-        _rc, res = hx.run_streaming(hx.generator_cmd(task, prompt_file, a.model), wt, gen_env,
+        _rc, res = hx.run_streaming(hx.generator_cmd(task, prompt_file, a.model or task.get("model")), wt, gen_env,
                                     task_timeout, log, thread_dir=td, cfg=cfg)
         report = res or report or f"(no final result; generator rc={_rc}, see {log.name})"
         if hx.auth_failure(res):

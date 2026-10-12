@@ -86,7 +86,8 @@ task.json ──validate──▶ worktree + branch agent/<stamp>/<id>
 ```
 
 Budgets per task: `max_iterations`, `max_turns` per iteration, `max_budget_usd`
-split evenly across iterations.
+split evenly across iterations. An optional `model` picks the generator model per task: a cheaper one for
+mechanical work (resume, extend N, re-run), the strongest for design and diagnosis. `--model` overrides it.
 
 ## 6. Morning triage (human)
 
