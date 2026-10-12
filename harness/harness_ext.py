@@ -495,13 +495,40 @@ def no_change_problem(task: dict, zone_check: dict, cfg: dict) -> str | None:
 
 # ----------------------------------------------------------------------------- evaluator
 
+DIFF_MAX_BYTES = 5_000_000      # the evidence copy is committed with the run; keep it far under host push limits
+DIFF_FILE_MAX_LINES = 3000      # in an oversized diff, files bigger than this appear only in the stat
+
+
+def _diff_for_evidence(wt: Path, base: str) -> str:
+    """The run's diff, or (when it is huge, e.g. per-seed research data) the full stat plus the diff of the
+    files small enough to review. Reviewers need the code, not megabytes of generated records."""
+    spec = ["--", ".", ":(exclude).harness"]
+    full = _git(["diff", base, *spec], wt)
+    if len(full.encode("utf-8")) <= DIFF_MAX_BYTES:
+        return full
+    small, big = [], []
+    for line in _git(["diff", "--numstat", base, *spec], wt).splitlines():
+        parts = line.split("\t", 2)
+        if len(parts) != 3:
+            continue
+        added, removed, path = parts
+        n = (int(added) if added.isdigit() else DIFF_FILE_MAX_LINES + 1) + (int(removed) if removed.isdigit() else 0)
+        (small if n <= DIFF_FILE_MAX_LINES else big).append(path)
+    head = (f"# diff truncated for evidence: {len(full.encode('utf-8'))} bytes > {DIFF_MAX_BYTES}.\n"
+            f"# {len(big)} file(s) over {DIFF_FILE_MAX_LINES} changed lines (or binary) are listed in the stat only;\n"
+            f"# read them from the branch. Full stat, then the diff of the remaining {len(small)} file(s):\n\n")
+    stat = _git(["diff", "--stat=200", base, *spec], wt)
+    body = _git(["diff", base, "--", *small], wt) if small else ""
+    return head + stat + "\n" + body
+
+
 def write_evidence(worktree: str | Path, task: dict, base: str, logs: dict[str, str], zone_check: dict) -> Path:
     wt = Path(worktree)
     d = wt / ".harness" / task["id"]
     d.mkdir(parents=True, exist_ok=True)
     (d / "task.json").write_text(json.dumps(task, indent=2), encoding="utf-8")
     _git(["add", "-A", "--intent-to-add"], wt)  # so new files show up in the diff
-    (d / "diff.patch").write_text(_git(["diff", base, "--", ".", ":(exclude).harness"], wt), encoding="utf-8")
+    (d / "diff.patch").write_text(_diff_for_evidence(wt, base), encoding="utf-8")
     (d / "zone_check.json").write_text(json.dumps(zone_check, indent=2), encoding="utf-8")
     for name, text in logs.items():  # e.g. {"oracle_fast": ..., "oracle_full": ..., "report": ...}
         ext = ".md" if name == "report" else ".log"
